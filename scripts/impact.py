@@ -394,6 +394,47 @@ def summarize(root):
         note="First completed record per scenario/strategy/seed. All task failures retained; infrastructure retries separate. No frame-level significance tests."))
 
 
+def stage_a(args):
+    """Run one independent Stage A goal-navigation task and write its gate record."""
+    root = Path(args.results).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    run, report = experiment(args)
+    mission = report.get("mission", {})
+    evaluation = report.get("evaluation", {})
+    checks = {
+        "protocol_is_stage_a": True,
+        "not_legacy_p5_gate": mission.get("gate") != "P5_BASELINE_MAP_FRONTIER_EGO",
+        "mission_record_present": bool(mission),
+        "evaluation_record_present": bool(evaluation),
+        "termination_record_present": "termination_confirmed" in mission,
+        "authorization_events_recorded": any(
+            event.get("event") in {"AUTHORIZATION", "CERTIFY", "REVOKE", "BRAKE"}
+            for event in (json.loads(line) for line in (run / "events.jsonl").read_text().splitlines() if line.strip())
+        ) if (run / "events.jsonl").is_file() else False,
+        "completed_task": bool(report.get("completed_record")),
+        "task_success": report.get("status") == "PASS" and bool(mission.get("task_success")),
+        "termination_confirmed": bool(mission.get("termination_confirmed")),
+    }
+    gate = {
+        "schema_version": 1,
+        "gate": "STAGE_A_GOAL_NAVIGATION_ACCEPTANCE",
+        "status": "PASS" if all(checks.values()) and checks["task_success"] else "FAIL",
+        "run": str(run),
+        "source_sha256": report.get("source_sha256"),
+        "config_sha256": report.get("config_sha256"),
+        "scenario": args.scenario,
+        "strategy": args.strategy,
+        "seed": args.seed,
+        "checks": checks,
+        "task_result": mission.get("task_result", {"status": report.get("status")} ),
+        "termination": mission.get("termination", {"confirmed": mission.get("termination_confirmed")} ),
+        "note": "Stage A target-navigation acceptance; never evidence for legacy P5 exploration or Stage B recovery benefit.",
+    }
+    write_json(root / "stage-a-validation.json", gate)
+    print(json.dumps(gate, ensure_ascii=False, indent=2))
+    return 0 if gate["status"] == "PASS" else 1
+
+
 def package(output):
     """Export tracked and non-ignored source, including uncommitted modifications."""
     output = Path(output).resolve()
@@ -426,11 +467,11 @@ def main():
     d.add_argument("--runtime", action="store_true")
     b = sub.add_parser("build"); b.add_argument("--cpu-only", action="store_true")
     t=sub.add_parser("test"); t.add_argument("--pure", action="store_true")
-    for name in ("run", "batch", "validate-server"):
+    for name in ("run", "stage-a", "batch", "validate-server"):
         s = sub.add_parser(name)
         s.add_argument("--profile", choices=("local_cpu","server_gpu"), default="server_gpu")
         s.add_argument("--results", default=str(ROOT/"experiments/results/impact_v1"))
-        if name == "run":
+        if name in ("run", "stage-a"):
             s.add_argument("--scenario", choices=config()["scenarios"], default="normal")
             s.add_argument("--strategy", choices=config()["strategies"], default="recovery")
             s.add_argument("--seed", type=int, default=1000)
@@ -449,6 +490,7 @@ def main():
         if args.command == "build": build(args.cpu_only)
         elif args.command == "test": return tests(args.pure)
         elif args.command == "run": return 0 if experiment(args)[1]["status"] == "PASS" else 1
+        elif args.command == "stage-a": return stage_a(args)
         elif args.command == "batch": batch(args)
         elif args.command == "validate-server": validate_server(args)
         elif args.command == "bundle": print(bundle(args.run_dir))

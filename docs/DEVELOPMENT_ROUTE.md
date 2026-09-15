@@ -10,7 +10,7 @@
 
 保留的是研究问题和最终任务能力，Frontier 的具体实现可以替换。预设目标是阶段性实验设计，不能永久代替自主探索，也不能用旧入口仍存在来宣称探索能力已回接。
 
-本次提交只更新开发约定和交接文档。现有 `validate-server` 仍先运行旧 P5，`batch` 仍依赖该验证记录；新的门禁流程尚未实现。不要手写 PASS、复用旧协议标记，或删除检查后直接运行正式矩阵。
+阶段 A 已有独立入口：`bash scripts/impact.sh stage-a`。它产生 `STAGE_A_GOAL_NAVIGATION_ACCEPTANCE`，与旧 P5 探索门禁分开。`validate-server` 仍保留旧 P5 诊断用途；`batch` 仍需新的服务器验证记录，不能把旧协议改名复用。
 
 ## 2. 三个递进阶段
 
@@ -70,6 +70,18 @@
 - 终止降落仅在预核查的静态测试场景验证，不扩展为任意环境安全着陆声明。
 
 验证记录需分别包含任务类型、任务结果、终止结果、源码/配置/外部二进制版本和共享地图检查结果。实现时给新验证协议显式版本及门禁名称，防止将旧 P5 或不完整的单次记录误用为新协议通过证据。
+
+服务器开发试跑示例：
+
+```bash
+bash scripts/impact.sh stage-a --profile server_gpu \
+  --scenario normal --strategy baseline --seed 1000 \
+  --results experiments/results/stage_a_dev
+python3 scripts/diagnose_stage_a_maps.py \
+  experiments/results/stage_a_dev/normal-baseline-s1000-*
+```
+
+阶段 A 试跑的 `normal`、`recoverable`、`unrecoverable` 与四种策略用于检查协议、在线触发和失败记录，不构成正式统计。地图审计脚本只做离线证据盘点；`READY_FOR_REVIEW` 也不等于地图正确性通过。
 
 ## 6. 阶段 C：明确的探索回接里程碑
 
