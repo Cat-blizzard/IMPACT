@@ -249,8 +249,7 @@ start_group mavros "${run_dir}/mavros.log" \
   fcu_url:=tcp://127.0.0.1:5760 namespace:=uav1/mavros
 wait_log "${run_dir}/sitl.log" "Loaded defaults" 45 "ArduPilot defaults"
 
-gz_args=(-r -s -v 3)
-[[ "$profile" == local_cpu ]] && gz_args+=(--headless-rendering)
+gz_args=(-r -s --headless-rendering -v 3)
 start_group gazebo "${run_dir}/gazebo.log" gz sim "${gz_args[@]}" "${world}"
 wait_log "${run_dir}/sitl.log" "JSON received" 90 "SITL-Gazebo JSON link"
 wait_log "${run_dir}/mavros.log" "Got HEARTBEAT" 60 "MAVROS heartbeat"
