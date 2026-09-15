@@ -158,7 +158,10 @@ stop_groups() {
   for ((index=${#pids[@]}-1; index>=0; index--)); do
     pid="${pids[index]}"
     pgid="$(ps -o pgid= -p "${pid}" 2>/dev/null | tr -d '[:space:]' || true)"
-    [[ "${pgid}" == "${pid}" ]] && kill -INT -- "-${pgid}" 2>/dev/null || true
+    if [[ "${pgid}" == "${pid}" ]]; then
+      if [[ "${labels[index]}" == gazebo ]]; then kill -TERM -- "-${pgid}" 2>/dev/null || true
+      else kill -INT -- "-${pgid}" 2>/dev/null || true; fi
+    fi
   done
   for round in 1 2 3 4 5 6 7 8 9 10; do
     local alive=false
@@ -364,6 +367,8 @@ mission = json.loads((run / "mission-result.json").read_text(encoding="utf-8"))
 evaluation = json.loads((run / "localization-evaluation.json").read_text(encoding="utf-8"))
 metadata = run / "rosbag" / "metadata.yaml"
 isolation = (run / "isolation-audit.txt").read_text(encoding="utf-8")
+gazebo_log = (run / "gazebo.log").read_text(encoding="utf-8", errors="replace")
+launcher_log = (run / "launcher.log").read_text(encoding="utf-8", errors="replace") if (run / "launcher.log").exists() else ""
 summary = {
     "schema_version": 2,
     "gate": "P4_GPS_OFF_FAST_LIO_EXTERNAL_NAV_CLOSED_LOOP",
@@ -385,11 +390,14 @@ summary = {
     if (run / "dataflash.inventory.txt").is_file() else [],
     "ground_truth_isolated": True,
     "external_assets_unchanged": "PASS:" in isolation,
+    "gazebo_clean_exit": not any(x in gazebo_log + launcher_log for x in ("Segmentation fault", "core dumped")),
     "generated_at_utc": datetime.now(timezone.utc).isoformat(),
 }
 (run / "summary.json").write_text(
     json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
 )
+if not summary["gazebo_clean_exit"]:
+    raise SystemExit("Gazebo exit was not clean")
 print(json.dumps(summary, ensure_ascii=False, indent=2))
 PY
 
