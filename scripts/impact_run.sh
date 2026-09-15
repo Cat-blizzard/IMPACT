@@ -56,6 +56,11 @@ wait_log() {
     sleep 0.5
   done
 }
+graph_probe() {
+  topic="$1"; output="$2"
+  timeout 15 ros2 topic info "$topic" -v >"$output"
+  printf '%s\n' "$(date -Is)" >"${output%.txt}-collected-at.txt"
+}
 sha256sum "$ARDUPILOT_ROOT/build/sitl/bin/arducopter" \
  "$ARDUPILOT_GAZEBO_ROOT/build/libArduPilotPlugin.so" >"$run/external-binaries.sha256"
 git -C "$ARDUPILOT_ROOT" rev-parse HEAD >"$run/ardupilot-revision.txt"
@@ -96,20 +101,30 @@ python3 "$root/scripts/wait_for_odometry.py" --topic /localization/odom --timeou
 phase="wait_integrity"
 timeout 30 ros2 topic echo --no-daemon --once /integrity/directional >"$run/first-integrity.txt"
 phase="audit_runtime_graph"
-ros2 topic info /xq/eval/p5/ground_truth -v >"$run/truth-graph.txt"
-ros2 topic info /uav1/mavros/setpoint_position/local -v >"$run/setpoint-graph.txt"
-ros2 topic info /xq/p4/extnav/status -v >"$run/extnav-status-graph.txt"
-ros2 topic info /uav1/mavros/odometry/out -v >"$run/extnav-output-graph.txt"
+graph_probe /xq/eval/p5/ground_truth "$run/truth-graph.txt"
+graph_probe /uav1/mavros/setpoint_position/local "$run/setpoint-graph.txt"
+graph_probe /xq/p4/extnav/status "$run/extnav-status-graph.txt"
+graph_probe /uav1/mavros/odometry/out "$run/extnav-output-graph.txt"
 audit_args=("$run" "$profile")
 [[ "${IMPACT_SMOKE_ONLY:-0}" == 1 ]] && audit_args+=(--smoke)
 python3 "$root/scripts/impact_runtime_audit.py" "${audit_args[@]}"
 if [[ "${IMPACT_SMOKE_ONLY:-0}" == 1 ]]; then
   phase="smoke_observation"
-  started=$(date +%s)
-  sleep 30
-  cat >"$run/smoke.json" <<EOF
-{"mode":"NO_ARM_NO_TAKEOFF","observation_window_s":30,"started_epoch":$started,"mission_started":false,"arm_requested":false,"takeoff_requested":false}
-EOF
+  python3 "$root/scripts/startup_smoke_monitor.py" --seconds 30 --output "$run/smoke-observation.json"
+  phase="smoke_bag_validation"
+  timeout 20 ros2 bag info "$run/rosbag" >"$run/smoke-bag-info.txt"
+  python3 - "$run" <<'PY'
+import json, pathlib, sys
+r=pathlib.Path(sys.argv[1]); obs=json.loads((r/'smoke-observation.json').read_text())
+info=(r/'smoke-bag-info.txt').read_text()
+gaz=(r/'gazebo.log').read_text(errors='replace')
+result={'mode':'NO_ARM_NO_TAKEOFF','observation':obs,'bag_readable':bool(info.strip()),
+        'gazebo_exit_evidence':{'signaled': 'Segmentation fault' in gaz or 'core dumped' in gaz,
+                                'log_tail':gaz[-1000:]}}
+result['passed']=result['bag_readable'] and obs['fcu_armed_count']==0 and obs['metrics']['odom']['count']>0 and obs['metrics']['extnav']['count']>0
+(r/'smoke.json').write_text(json.dumps(result,indent=2)+'\n')
+raise SystemExit(0 if result['passed'] else 1)
+PY
   exit 0
 fi
 session="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["session_id"])' "$run/run.json")"
