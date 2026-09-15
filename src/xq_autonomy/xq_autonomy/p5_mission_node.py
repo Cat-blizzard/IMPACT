@@ -158,7 +158,7 @@ class P5MissionNode(P4MissionNode):
         self._poll_command()
         now = time.monotonic()
         if now - self.started > float(self.get_parameter("mission_timeout_s").value):
-            self._finish("FAIL", f"mission timeout in {self.phase}")
+            self._failure_to_land(f"mission timeout in {self.phase}")
             return
         if self.have_state and not self.fcu_state.connected and self.phase != "WAIT_FCU":
             if self.phase != "FAILSAFE_WAIT":
@@ -219,23 +219,23 @@ class P5MissionNode(P4MissionNode):
                 self.target = self.current_xyz
                 self._transition("EXPLORE_START", "takeoff complete; enabling Frontier")
             elif now - self.phase_started > 45.0:
-                self._finish("FAIL", "takeoff altitude not reached")
+                self._failure_to_land("takeoff altitude not reached")
         elif self.phase == "EXPLORE_START":
             fresh = now - self.exploration_last_wall < 2.0 and now - self.ego_last_wall < 2.0
             if fresh and int(self.exploration_status.get("goals_published", 0)) >= 1:
                 self._transition("EXPLORE", "first autonomous Frontier goal published")
             elif now - self.phase_started > 45.0:
-                self._finish("FAIL", "Frontier did not autonomously produce a goal")
+                self._failure_to_land("Frontier did not autonomously produce a goal")
         elif self.phase == "EXPLORE":
             fresh = now - self.exploration_last_wall < 2.0
             if fresh and self.exploration_status.get("finished") is True:
                 if self.bspline_count < 1 or int(self.ego_status.get("forwarded", 0)) < 1:
-                    self._finish("FAIL", "Frontier finished without a verified EGO trajectory")
+                    self._failure_to_land("Frontier finished without a verified EGO trajectory")
                 else:
                     self._publish_enable(False)
                     self._transition("LAND", "Frontier exhaustion automatically declared")
             elif now - self.phase_started > 300.0:
-                self._finish("FAIL", "autonomous exploration did not finish")
+                self._failure_to_land("autonomous exploration did not finish")
         elif self.phase == "LAND":
             self._publish_enable(False)
             self._send_command("land")

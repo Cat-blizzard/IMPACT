@@ -97,3 +97,54 @@ def test_fcu_fault_text_is_classified(text: str, reason: str) -> None:
 
 def test_benign_fcu_text_is_not_classified_as_fault() -> None:
     assert _fcu_fault_reason("EKF3 lane switch 0") is None
+
+
+def test_inflight_failure_routes_to_landing_when_armed() -> None:
+    node = object.__new__(P4MissionNode)
+    node.finalized = False
+    node.phase = "ASCEND"
+    node.task_failure_reason = None
+    node.have_state = True
+    node.fcu_state = type("State", (), {"armed": True})()
+    transitions = []
+    events = []
+    node._transition = lambda phase, detail: (transitions.append((phase, detail)), setattr(node, "phase", phase))
+    node._event = lambda kind, detail: events.append((kind, detail))
+    node._finish = lambda status, reason: (_ for _ in ()).throw(AssertionError("must not finish while armed"))
+    P4MissionNode._failure_to_land(node, "takeoff altitude not reached")
+    assert node.phase == "LAND"
+    assert transitions == [("LAND", "takeoff altitude not reached")]
+    assert events == [("TASK_FAILURE", "takeoff altitude not reached")]
+
+
+def test_preflight_failure_can_finish_without_armed_flight() -> None:
+    node = object.__new__(P4MissionNode)
+    node.finalized = False
+    node.phase = "VERIFY_NAV"
+    node.task_failure_reason = None
+    node.have_state = True
+    node.fcu_state = type("State", (), {"armed": False})()
+    result = []
+    node._finish = lambda status, reason: result.append((status, reason))
+    P4MissionNode._failure_to_land(node, "ExternalNav did not become healthy")
+    assert result == [("FAIL", "ExternalNav did not become healthy")]
+
+
+def test_failure_does_not_override_existing_landing_or_unknown_state() -> None:
+    node = object.__new__(P4MissionNode)
+    node.finalized = False
+    node.phase = "LAND"
+    node.task_failure_reason = None
+    node.have_state = True
+    node.fcu_state = type("State", (), {"armed": True})()
+    node._transition = lambda *_: (_ for _ in ()).throw(AssertionError("must preserve LAND"))
+    node._finish = lambda *_: (_ for _ in ()).throw(AssertionError("must not finalize LAND"))
+    P4MissionNode._failure_to_land(node, "mission timeout in LAND")
+    assert node.phase == "LAND"
+
+    node.phase = "TRACK_SQUARE"
+    node.have_state = False
+    result = []
+    node._finish = lambda status, reason: result.append((status, reason))
+    P4MissionNode._failure_to_land(node, "mission timeout in TRACK_SQUARE")
+    assert result == [("FAIL", "mission timeout in TRACK_SQUARE")]

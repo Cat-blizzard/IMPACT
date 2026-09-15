@@ -562,6 +562,17 @@ class P4MissionNode(Node):
         self._transition("FAILSAFE_WAIT", self.task_failure_reason)
         self._event("TASK_FAILURE", self.task_failure_reason)
 
+    def _failure_to_land(self, reason: str) -> None:
+        """Route an in-flight failure through landing and termination confirmation."""
+        if self.finalized or self.phase in ("LAND", "DESCEND", "FAILSAFE_WAIT"):
+            return
+        self.task_failure_reason = reason
+        if self.have_state and self.fcu_state.armed:
+            self._transition("LAND", reason)
+            self._event("TASK_FAILURE", reason)
+        else:
+            self._finish("FAIL", reason)
+
     def _distance_to_target(self) -> float:
         if self.target is None:
             return math.inf
@@ -654,7 +665,7 @@ class P4MissionNode(Node):
         self._poll_command()
         now = time.monotonic()
         if now - self.started > float(self.get_parameter("mission_timeout_s").value):
-            self._finish("FAIL", f"mission timeout in {self.phase}")
+            self._failure_to_land(f"mission timeout in {self.phase}")
             return
         if self.have_state and not self.fcu_state.connected and self.phase != "WAIT_FCU":
             if self.phase == "FAILSAFE_WAIT":
@@ -717,7 +728,7 @@ class P4MissionNode(Node):
             if self._arrived_for(2.0):
                 self._transition("HOVER", "takeoff altitude reached")
             elif now - self.phase_started > 45.0:
-                self._finish("FAIL", "takeoff altitude not reached")
+                self._failure_to_land("takeoff altitude not reached")
         elif self.phase == "HOVER":
             if now - self.phase_started >= float(self.get_parameter("hover_duration_s").value):
                 side = float(self.get_parameter("square_side_m").value)
@@ -740,7 +751,7 @@ class P4MissionNode(Node):
                     self.arrival_started = None
                     self._event("WAYPOINT", f"commanded corner {self.waypoint_index + 1}")
             elif now - self.phase_started > 45.0:
-                self._finish("FAIL", f"timeout reaching rectangle corner {self.waypoint_index + 1}")
+                self._failure_to_land(f"timeout reaching rectangle corner {self.waypoint_index + 1}")
         elif self.phase == "LAND":
             self._send_command("land")
         elif self.phase == "DESCEND":
