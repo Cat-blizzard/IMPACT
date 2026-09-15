@@ -22,6 +22,8 @@ IMPACT 是一套面向 **GNSS 拒止、未知环境与动态场景** 的单机�
 
 最新交付约定：[Demo 与基线对照](docs/DEMO_AND_BASELINES.md) · [服务器交接单](docs/SERVER_HANDOFF.md)。主视频为左基线、右完整 IMPACT 的双栏；当前渲染代码仍为三栏，双栏适配待做。正式实验保持四策略、三场景、十个配对种子。
 
+开发路线更新：[开发顺序与验收边界](docs/DEVELOPMENT_ROUTE.md)。总体目标仍是完整性感知自主探索；首版先验证目标导航和核心机制，再按明确里程碑回接探索。旧 P5 完整复现不再作为唯一前置要求，但共享地图和终止缺陷必须处理。当前 validate-server 仍使用旧 P5 门禁，新协议尚待实现。
+
 > **2026-09-03：SIL 仿真 P0–P15 已通过；P15 完成 map-derived 研究比较，下一阶段仍为多场景统计实验与硬件部署。**
 
 当前仓库不是仅包含方案文档的空工程，已经建立从 Gazebo / ArduPilot SITL 到 FAST-LIO2、Frontier、EGO-Planner 和导航完整性估计的可重复仿真链路。
