@@ -84,6 +84,21 @@ def _xyz_cloud(points: np.ndarray, stamp, frame_id: str) -> PointCloud2:
     return message
 
 
+def _mark_pose_free(
+    free: np.ndarray,
+    occupied: np.ndarray,
+    x: float,
+    y: float,
+    origin: float,
+    resolution: float,
+) -> None:
+    """Record a physically occupied pose cell as known free map space."""
+    ix = int(math.floor((x - origin) / resolution))
+    iy = int(math.floor((y - origin) / resolution))
+    if 0 <= ix < free.shape[0] and 0 <= iy < free.shape[1] and not occupied[ix, iy]:
+        free[ix, iy] = True
+
+
 def _bresenham(x0: int, y0: int, x1: int, y1: int):
     dx, sx = abs(x1 - x0), 1 if x0 < x1 else -1
     dy, sy = -abs(y1 - y0), 1 if y0 < y1 else -1
@@ -101,6 +116,37 @@ def _bresenham(x0: int, y0: int, x1: int, y1: int):
             y0 += sy
 
 
+def _known_viewpoint_candidates(
+    reachable_indices: np.ndarray,
+    distance: np.ndarray,
+    frontier: np.ndarray,
+    centroid: np.ndarray,
+    maximum_distance_cells: int,
+    minimum_path_m: float,
+    resolution: float,
+    limit: int = 160,
+    safe_free: np.ndarray | None = None,
+) -> list[tuple[int, int]]:
+    """Return known, reachable observation poses near a frontier cluster."""
+    if len(reachable_indices) == 0:
+        return []
+    squared = np.sum((reachable_indices - centroid) ** 2, axis=1)
+    order = np.argsort(squared)
+    candidates = []
+    for index in order[:limit]:
+        ix, iy = (int(reachable_indices[index, 0]), int(reachable_indices[index, 1]))
+        if squared[index] > maximum_distance_cells**2:
+            continue
+        if distance[ix, iy] * resolution < minimum_path_m:
+            continue
+        if frontier[ix, iy]:
+            continue
+        if safe_free is not None and not safe_free[ix, iy]:
+            continue
+        candidates.append((ix, iy))
+    return candidates
+
+
 class P5FrontierNode(Node):
     def __init__(self) -> None:
         super().__init__("xq_p5_frontier")
@@ -115,6 +161,8 @@ class P5FrontierNode(Node):
         self.declare_parameter("goal_tolerance_m", 0.65)
         self.declare_parameter("goal_timeout_s", 55.0)
         self.declare_parameter("finish_empty_cycles", 8)
+        self.declare_parameter("viewpoint_max_frontier_distance_m", 2.5)
+        self.declare_parameter("viewpoint_clearance_m", 1.2)
 
         self.resolution = float(self.get_parameter("resolution_m").value)
         half = float(self.get_parameter("map_half_extent_m").value)
@@ -140,6 +188,7 @@ class P5FrontierNode(Node):
         self.last_frontier = np.zeros_like(self.free)
         self.last_reachable_cells = 0
         self.last_viewpoint_mode = "none"
+        self.last_selection_reason = "not_started"
 
         reliable = QoSProfile(depth=20, reliability=ReliabilityPolicy.RELIABLE)
         self.cloud_pub = self.create_publisher(PointCloud2, "/xq/p5/cloud_map", reliable)
@@ -187,6 +236,11 @@ class P5FrontierNode(Node):
         self.position[:] = (p.x, p.y, p.z)
         self.orientation = source.pose.pose.orientation
         self.have_odom = True
+        # A pose actually occupied by the vehicle is observed free space even
+        # when the current LiDAR scan contains no return in the flight slab.
+        # Without this, an open-space goal can leave the robot's cell unknown
+        # and disconnect the reachable component from the frontier map.
+        _mark_pose_free(self.free, self.occupied, float(p.x), float(p.y), self.origin, self.resolution)
 
         output = Odometry()
         output.header = source.header
@@ -273,8 +327,13 @@ class P5FrontierNode(Node):
                 self.free[ex, ey] = False
         self.scan_count += 1
 
-    def _inflated(self) -> np.ndarray:
-        cells = int(math.ceil(float(self.get_parameter("clearance_m").value) / self.resolution))
+    def _inflated(self, clearance_m: float | None = None) -> np.ndarray:
+        clearance = (
+            float(self.get_parameter("clearance_m").value)
+            if clearance_m is None
+            else float(clearance_m)
+        )
+        cells = int(math.ceil(clearance / self.resolution))
         inflated = self.occupied.copy()
         occupied_indices = np.argwhere(self.occupied)
         for dx in range(-cells, cells + 1):
@@ -355,6 +414,8 @@ class P5FrontierNode(Node):
         self.last_clusters = clusters
         distance = self._reachable_distance(traversable)
         reachable_indices = np.argwhere(distance >= 0)
+        viewpoint_clearance = float(self.get_parameter("viewpoint_clearance_m").value)
+        viewpoint_free = self.free & ~self._inflated(viewpoint_clearance)
         self.last_reachable_cells = int(len(reachable_indices))
         radius = int(round(float(self.get_parameter("information_radius_m").value) / self.resolution))
         lam = float(self.get_parameter("distance_lambda").value)
@@ -362,28 +423,33 @@ class P5FrontierNode(Node):
         best_score = -math.inf
         best_mode = "none"
         for cluster in clusters:
-            candidates = [cell for cell in cluster if distance[cell] >= 0]
-            candidate_mode = "frontier_cell"
+            # A frontier cell borders unknown space and is therefore not a
+            # safe vehicle pose.  Select only already-known, reachable free
+            # cells near the cluster; newly observed obstacles cannot turn the
+            # target itself into an occupied cell during the approach.
+            if len(reachable_indices) == 0:
+                continue
+            centroid = np.mean(np.asarray(cluster, dtype=np.float64), axis=0)
+            maximum_view_distance = int(
+                round(
+                    float(self.get_parameter("viewpoint_max_frontier_distance_m").value)
+                    / self.resolution
+                )
+            )
+            candidates = _known_viewpoint_candidates(
+                reachable_indices,
+                distance,
+                frontier,
+                centroid,
+                maximum_view_distance,
+                minimum_path_m=0.45,
+                resolution=self.resolution,
+                safe_free=viewpoint_free,
+            )
+            candidate_mode = "offset_viewpoint"
             if not candidates:
-                # A Frontier is an unknown/free boundary, not necessarily a
-                # safe vehicle pose.  Generate viewpoints in already known,
-                # reachable free space near the cluster centroid.
-                if len(reachable_indices) == 0:
-                    continue
-                centroid = np.mean(np.asarray(cluster, dtype=np.float64), axis=0)
-                squared = np.sum((reachable_indices - centroid) ** 2, axis=1)
-                order = np.argsort(squared)
-                maximum_view_distance = int(round(2.5 / self.resolution))
-                candidates = [
-                    (int(reachable_indices[index, 0]), int(reachable_indices[index, 1]))
-                    for index in order[:160]
-                    if squared[index] <= maximum_view_distance**2
-                    and distance[tuple(reachable_indices[index])] * self.resolution >= 0.45
-                ]
-                candidate_mode = "offset_viewpoint"
-                if not candidates:
-                    continue
-            # Candidate viewpoint is a safe, reachable free Frontier cell.
+                continue
+            # Candidate viewpoint is a safe, reachable free cell.
             for ix, iy in candidates[:: max(1, len(candidates) // 24)]:
                 x0, x1 = max(0, ix - radius), min(self.size, ix + radius + 1)
                 y0, y1 = max(0, iy - radius), min(self.size, iy + radius + 1)
@@ -398,8 +464,10 @@ class P5FrontierNode(Node):
                     best_mode = candidate_mode
         if best is None:
             self.last_viewpoint_mode = "none"
+            self.last_selection_reason = "no_reachable_viewpoint" if clusters else "no_frontier"
             return None, len(clusters)
         self.last_viewpoint_mode = best_mode
+        self.last_selection_reason = "selected_goal"
         x, y = self._world(*best)
         return (x, y, float(self.get_parameter("flight_altitude_m").value)), len(clusters)
 
@@ -459,6 +527,10 @@ class P5FrontierNode(Node):
             "resolution_m": self.resolution,
             "selection_objective": "J=I-lambda*d",
             "distance_lambda": float(self.get_parameter("distance_lambda").value),
+            "clearance_m": float(self.get_parameter("clearance_m").value),
+            "viewpoint_clearance_m": float(
+                self.get_parameter("viewpoint_clearance_m").value
+            ),
             "scan_count": self.scan_count,
             "known_cells": known,
             "known_fraction": known / float(self.size * self.size),
@@ -466,6 +538,7 @@ class P5FrontierNode(Node):
             "frontier_clusters": clusters,
             "reachable_free_cells": self.last_reachable_cells,
             "viewpoint_mode": self.last_viewpoint_mode,
+            "selection_reason": self.last_selection_reason,
             "goals_published": self.goal_count,
             "goals_reached": self.reached_count,
             "goals_failed": self.failed_count,

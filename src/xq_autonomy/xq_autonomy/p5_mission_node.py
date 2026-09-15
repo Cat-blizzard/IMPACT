@@ -88,6 +88,7 @@ class P5MissionNode(P4MissionNode):
             "reason": reason,
             "generated_at_utc": datetime.now(timezone.utc).isoformat(),
             "elapsed_s": round(time.monotonic() - self.started, 3),
+            "command_timeout_s": float(self.get_parameter("command_timeout_s").value),
             "verified_parameters": self.verified_params,
             "external_nav": self.extnav_status,
             "exploration": exploration,

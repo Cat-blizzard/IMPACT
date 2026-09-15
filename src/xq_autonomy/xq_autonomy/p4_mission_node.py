@@ -55,6 +55,7 @@ class P4MissionNode(Node):
         self.declare_parameter("hover_duration_s", 5.0)
         self.declare_parameter("arrival_tolerance_m", 0.45)
         self.declare_parameter("mission_timeout_s", 240.0)
+        self.declare_parameter("command_timeout_s", 8.0)
         self.declare_parameter("result_file", "")
         self.declare_parameter("extnav_status_topic", "/xq/p4/extnav/status")
 
@@ -232,6 +233,13 @@ class P4MissionNode(Node):
             return
         kind, future = self.pending_command
         if not future.done():
+            timeout_s = float(self.get_parameter("command_timeout_s").value)
+            if time.monotonic() - self.last_request > timeout_s:
+                self.pending_command = None
+                self._event(
+                    "RESPONSE",
+                    f"{kind} timeout after {timeout_s:.1f}s; retrying",
+                )
             return
         self.pending_command = None
         try:
@@ -336,6 +344,7 @@ class P4MissionNode(Node):
             "reason": reason,
             "generated_at_utc": datetime.now(timezone.utc).isoformat(),
             "elapsed_s": round(time.monotonic() - self.started, 3),
+            "command_timeout_s": float(self.get_parameter("command_timeout_s").value),
             "verified_parameters": self.verified_params,
             "external_nav": self.extnav_status,
             "completed_waypoints": self.completed_waypoints,
