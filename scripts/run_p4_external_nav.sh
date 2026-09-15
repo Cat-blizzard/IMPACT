@@ -3,6 +3,10 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 workspace_root="$(cd -- "${script_dir}/.." && pwd -P)"
+install_root="${IMPACT_INSTALL:-${workspace_root}/xq_install}"
+ardupilot_root="${ARDUPILOT_ROOT:-/home/accelerate/ardupilot}"
+plugin_root="${ARDUPILOT_GAZEBO_ROOT:-/home/accelerate/ardupilot_gazebo}"
+build_manifest="${IMPACT_BUILD_MANIFEST:-${install_root}/.xq_build_manifest.json}"
 requested_run_dir=""
 minimum_eval_duration_s=70
 
@@ -26,11 +30,11 @@ done
 }
 
 for required in \
-  "${workspace_root}/xq_install/setup.bash" \
+  "${install_root}/setup.bash" \
   "${workspace_root}/scripts/audit_external_assets.sh" \
-  "${workspace_root}/xq_install/xq_autonomy/share/xq_autonomy/config/xq_p4_extnav.parm" \
-  "/home/accelerate/ardupilot/build/sitl/bin/arducopter" \
-  "/home/accelerate/ardupilot_gazebo/build/libArduPilotPlugin.so"; do
+  "${install_root}/xq_autonomy/share/xq_autonomy/config/xq_p4_extnav.parm" \
+  "${ardupilot_root}/build/sitl/bin/arducopter" \
+  "${plugin_root}/build/libArduPilotPlugin.so"; do
   [[ -e "${required}" ]] || { echo "Missing dependency: ${required}" >&2; exit 2; }
 done
 
@@ -60,7 +64,7 @@ unset GZ_SIM_RESOURCE_PATH IGN_GAZEBO_RESOURCE_PATH SDF_PATH
 unset RMW_IMPLEMENTATION FASTRTPS_DEFAULT_PROFILES_FILE CYCLONEDDS_URI
 set +u
 source /opt/ros/humble/setup.bash
-source "${workspace_root}/xq_install/setup.bash"
+source "${install_root}/setup.bash"
 set -u
 
 export ROS_DOMAIN_ID=$((102 + (10#$(date +%S) + $$) % 80))
@@ -73,13 +77,13 @@ export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
 export GALLIUM_DRIVER=llvmpipe
 export EGL_PLATFORM=surfaceless
 export QT_QPA_PLATFORM=offscreen
-export GZ_SIM_RESOURCE_PATH="${workspace_root}/xq_install/xq_gz_assets/share/xq_gz_assets/models:/home/accelerate/ardupilot_gazebo/models:/home/accelerate/ardupilot_gazebo/worlds"
+export GZ_SIM_RESOURCE_PATH="${install_root}/xq_gz_assets/share/xq_gz_assets/models:${plugin_root}/models:${plugin_root}/worlds"
 export IGN_GAZEBO_RESOURCE_PATH="${GZ_SIM_RESOURCE_PATH}"
 export SDF_PATH="${GZ_SIM_RESOURCE_PATH}"
-export GZ_SIM_SYSTEM_PLUGIN_PATH="/home/accelerate/ardupilot_gazebo/build"
+export GZ_SIM_SYSTEM_PLUGIN_PATH="${plugin_root}/build"
 
-world="${workspace_root}/xq_install/xq_gz_assets/share/xq_gz_assets/worlds/xq_p4_external_nav.sdf"
-p4_params="${workspace_root}/xq_install/xq_autonomy/share/xq_autonomy/config/xq_p4_extnav.parm"
+world="${install_root}/xq_gz_assets/share/xq_gz_assets/worlds/xq_p4_external_nav.sdf"
+p4_params="${install_root}/xq_autonomy/share/xq_autonomy/config/xq_p4_extnav.parm"
 mission_result="${run_dir}/mission-result.json"
 evaluation_result="${run_dir}/localization-evaluation.json"
 [[ -f "${world}" ]] || { echo "Installed P4 world is missing." >&2; exit 2; }
@@ -89,7 +93,11 @@ run_started_utc=${timestamp}
 minimum_eval_duration_s=${minimum_eval_duration_s}
 ros_domain_id=${ROS_DOMAIN_ID}
 gz_partition=${GZ_PARTITION}
-world=${world}
+  world=${world}
+  install_root=${install_root}
+  ardupilot_root=${ardupilot_root}
+  plugin_root=${plugin_root}
+  build_manifest=${build_manifest}
 mavros_namespace=/uav1/mavros
 external_nav_topic=/uav1/mavros/odometry/out
 gps_disabled=GPS_TYPE:0,SIM_GPS_DISABLE:1
@@ -99,17 +107,22 @@ EOF
 sha256sum \
   "${world}" \
   "${p4_params}" \
-  "${workspace_root}/xq_install/xq_gz_assets/share/xq_gz_assets/models/xq_iris_mid360_ardupilot/model.sdf" \
-  "${workspace_root}/xq_install/xq_fast_lio/share/xq_fast_lio/config/xq_p4.yaml" \
-  "${workspace_root}/xq_install/xq_gz_bridge/share/xq_gz_bridge/config/p4_external_nav.yaml" \
-  /home/accelerate/ardupilot/build/sitl/bin/arducopter \
-  /home/accelerate/ardupilot/Tools/autotest/default_params/copter.parm \
-  /home/accelerate/ardupilot/Tools/autotest/default_params/gazebo-iris.parm \
-  /home/accelerate/ardupilot_gazebo/build/libArduPilotPlugin.so \
-  /home/accelerate/ardupilot_gazebo/models/iris_with_ardupilot/model.sdf \
-  /home/accelerate/ardupilot_gazebo/models/iris_with_standoffs/model.sdf \
+  "${install_root}/xq_gz_assets/share/xq_gz_assets/models/xq_iris_mid360_ardupilot/model.sdf" \
+  "${install_root}/xq_fast_lio/share/xq_fast_lio/config/xq_p4.yaml" \
+  "${install_root}/xq_gz_bridge/share/xq_gz_bridge/config/p4_external_nav.yaml" \
+  "${ardupilot_root}/build/sitl/bin/arducopter" \
+  "${ardupilot_root}/Tools/autotest/default_params/copter.parm" \
+  "${ardupilot_root}/Tools/autotest/default_params/gazebo-iris.parm" \
+  "${plugin_root}/build/libArduPilotPlugin.so" \
+  "${plugin_root}/models/iris_with_ardupilot/model.sdf" \
+  "${plugin_root}/models/iris_with_standoffs/model.sdf" \
   >"${run_dir}/runtime-dependencies.sha256"
-cp -- "${workspace_root}/xq_install/.xq_build_manifest.json" "${run_dir}/xq-build-manifest.json"
+if [[ -f "${build_manifest}" ]]; then
+  cp -- "${build_manifest}" "${run_dir}/xq-build-manifest.json"
+else
+  echo "Build manifest not found: ${build_manifest}" >&2
+  exit 2
+fi
 
 before_audit="${run_dir}/external-assets.before.sha256"
 after_audit="${run_dir}/external-assets.after.sha256"
@@ -173,6 +186,14 @@ finish_audit() {
   cleanup_done=true
 }
 
+inventory_dataflash() {
+  find "${run_dir}/sitl_runtime/logs" -maxdepth 1 -type f -name '*.BIN' -print0 \
+    | sort -z \
+    | xargs -0 -r sha256sum >"${run_dir}/dataflash.sha256"
+  find "${run_dir}/sitl_runtime/logs" -maxdepth 1 -type f -name '*.BIN' -printf '%f %s bytes\n' \
+    | sort >"${run_dir}/dataflash.inventory.txt"
+}
+
 cleanup() {
   local status=$?
   trap - EXIT INT TERM
@@ -180,6 +201,7 @@ cleanup() {
   stop_groups
   finish_audit
   local audit_status=$?
+  inventory_dataflash
   ((audit_status == 0)) || status="${audit_status}"
   exit "${status}"
 }
@@ -210,9 +232,9 @@ assert_core_alive() {
 
 pushd "${run_dir}/sitl_runtime" >/dev/null
 start_group sitl "${run_dir}/sitl.log" \
-  /home/accelerate/ardupilot/build/sitl/bin/arducopter \
+  "${ardupilot_root}/build/sitl/bin/arducopter" \
   -S --model JSON --speedup 1 --slave 0 --wipe \
-  --defaults "/home/accelerate/ardupilot/Tools/autotest/default_params/copter.parm,/home/accelerate/ardupilot/Tools/autotest/default_params/gazebo-iris.parm,${p4_params}" \
+  --defaults "${ardupilot_root}/Tools/autotest/default_params/copter.parm,${ardupilot_root}/Tools/autotest/default_params/gazebo-iris.parm,${p4_params}" \
   --sim-address=127.0.0.1 -I0
 popd >/dev/null
 wait_log "${run_dir}/sitl.log" "SERIAL0 on TCP port 5760" 30 "SITL MAVLink listener"
@@ -227,12 +249,16 @@ start_group gazebo "${run_dir}/gazebo.log" \
 wait_log "${run_dir}/sitl.log" "JSON received" 90 "SITL-Gazebo JSON link"
 wait_log "${run_dir}/mavros.log" "Got HEARTBEAT" 60 "MAVROS heartbeat"
 
+# Keep the primary SQLite file directly readable for post-flight correlation.
+# Compression can be performed on a verified copy after recording; a killed
+# compression/finalization process must not make the only evidence unreadable.
 start_group rosbag "${run_dir}/rosbag.log" \
-  ros2 bag record --compression-mode file --compression-format zstd \
+  ros2 bag record --compression-mode none \
   -o "${run_dir}/rosbag" \
   /clock /livox/lidar /livox/imu /localization/odom \
   /uav1/mavros/odometry/out /uav1/mavros/local_position/odom \
-  /uav1/mavros/state /uav1/mavros/imu/data \
+  /uav1/mavros/state /uav1/mavros/extended_state /uav1/mavros/statustext/recv \
+  /uav1/mavros/imu/data \
   /xq/p4/extnav/status /xq/eval/p4/ground_truth
 
 start_group p4_stack "${run_dir}/p4-stack.log" \
@@ -240,21 +266,25 @@ start_group p4_stack "${run_dir}/p4-stack.log" \
   evaluation_result_file:="${evaluation_result}" \
   minimum_duration_s:="${minimum_eval_duration_s}.0"
 
-# Wait for the real algorithm output, not only process startup.
-timeout 100 ros2 topic echo --once /localization/odom \
-  >"${run_dir}/first-localization-odom.txt" 2>&1 || {
+# Wait for the real algorithm output, not only process startup.  Use the
+# diagnostic probe shared with P5 so QoS discovery failures are captured
+# separately from a genuine FAST-LIO no-odom failure.
+python3 "${script_dir}/wait_for_odometry.py" \
+  --topic /localization/odom --timeout 100 \
+  --output "${run_dir}/first-localization-odom.txt" \
+  --diagnostics "${run_dir}/first-localization-odom.diagnostics.json" || {
     echo "FAST-LIO did not publish /localization/odom." >&2
     exit 5
   }
 assert_core_alive
 
-ros2 topic list -t >"${run_dir}/ros-topics.txt" 2>&1
-ros2 node list >"${run_dir}/ros-nodes.txt" 2>&1
-ros2 service list -t >"${run_dir}/ros-services.txt" 2>&1
+ros2 topic list --no-daemon -t >"${run_dir}/ros-topics.txt" 2>&1
+ros2 node list --no-daemon >"${run_dir}/ros-nodes.txt" 2>&1
+ros2 service list --no-daemon -t >"${run_dir}/ros-services.txt" 2>&1
 gz topic -l >"${run_dir}/gz-topics.txt" 2>&1
-ros2 topic info /uav1/mavros/odometry/out -v \
+ros2 topic info --no-daemon /uav1/mavros/odometry/out -v \
   >"${run_dir}/external-nav-topic-graph.txt" 2>&1
-ros2 topic info /xq/eval/p4/ground_truth -v \
+ros2 topic info --no-daemon /xq/eval/p4/ground_truth -v \
   >"${run_dir}/ground-truth-topic-graph.txt" 2>&1
 
 grep -q '/uav1/mavros/odometry/out' "${run_dir}/ros-topics.txt" || {
@@ -300,7 +330,7 @@ done
   exit 9
 }
 
-timeout 10 ros2 topic echo --once /uav1/mavros/state \
+timeout 10 ros2 topic echo --no-daemon --once /uav1/mavros/state \
   >"${run_dir}/final-state.txt" 2>&1
 grep -q 'connected: true' "${run_dir}/final-state.txt" || {
   echo "MAVROS was not connected at P4 completion." >&2; exit 10;
@@ -316,6 +346,7 @@ fi
 
 stop_groups
 finish_audit
+inventory_dataflash
 
 python3 - "${run_dir}" <<'PY'
 import json
@@ -329,17 +360,24 @@ evaluation = json.loads((run / "localization-evaluation.json").read_text(encodin
 metadata = run / "rosbag" / "metadata.yaml"
 isolation = (run / "isolation-audit.txt").read_text(encoding="utf-8")
 summary = {
-    "schema_version": 1,
+    "schema_version": 2,
     "gate": "P4_GPS_OFF_FAST_LIO_EXTERNAL_NAV_CLOSED_LOOP",
     "status": "PASS",
     "mission_status": mission["status"],
     "mission_elapsed_s": mission["elapsed_s"],
     "mission_checks": mission["checks"],
+    "task_result": mission.get("task_result"),
+    "termination": mission.get("termination"),
+    "health_gate": mission.get("health_gate"),
+    "fcu_status_texts": mission.get("fcu_status_texts", []),
     "verified_parameters": mission["verified_parameters"],
     "external_nav": mission["external_nav"],
     "localization_status": evaluation["status"],
     "localization_metrics": evaluation["metrics"],
     "rosbag_present": metadata.is_file(),
+    "dataflash_present": any((run / "sitl_runtime" / "logs").glob("*.BIN")),
+    "dataflash_inventory": (run / "dataflash.inventory.txt").read_text(encoding="utf-8").splitlines()
+    if (run / "dataflash.inventory.txt").is_file() else [],
     "ground_truth_isolated": True,
     "external_assets_unchanged": "PASS:" in isolation,
     "generated_at_utc": datetime.now(timezone.utc).isoformat(),

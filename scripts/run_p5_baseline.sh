@@ -226,6 +226,7 @@ wait_log "${run_dir}/sitl.log" "JSON received" 90 Gazebo
 wait_log "${run_dir}/mavros.log" "Got HEARTBEAT" 60 MAVROS
 bag_topics=(
   /clock /livox/lidar /livox/imu /localization/odom /xq/p5/ego_odom /xq/p5/cloud_map
+  /xq/p5/ego_occupancy_inflate
   /xq/p5/navigation_map /xq/p5/frontiers /xq/p5/frontier_goal /xq/p5/exploration/status
   /planning/bspline /position_cmd /xq/p5/ego_adapter/status
   /uav1/mavros/odometry/out /uav1/mavros/local_position/odom /uav1/mavros/state
@@ -237,7 +238,7 @@ fi
 if [[ "${phase8}" == true ]]; then
   bag_topics+=(/integrity/alert_limit /integrity/alert_limit_debug)
 fi
-start_group rosbag "${run_dir}/rosbag.log" ros2 bag record --compression-mode file --compression-format zstd -o "${run_dir}/rosbag" "${bag_topics[@]}"
+start_group rosbag "${run_dir}/rosbag.log" ros2 bag record --compression-mode none -o "${run_dir}/rosbag" "${bag_topics[@]}"
 if [[ "${phase6}" == true ]]; then
   start_group p5_stack "${run_dir}/p5-stack.log" ros2 launch xq_sim_bringup xq_p6_directional_integrity.launch.py \
     evaluation_result_file:="${evaluation_result}" integrity_result_file:="${integrity_result}"

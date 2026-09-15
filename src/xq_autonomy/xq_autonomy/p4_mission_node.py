@@ -11,7 +11,7 @@ from pathlib import Path
 import rclpy
 from geographic_msgs.msg import GeoPointStamped
 from geometry_msgs.msg import PoseStamped
-from mavros_msgs.msg import State
+from mavros_msgs.msg import State, StatusText
 from mavros_msgs.srv import CommandBool, CommandTOL, SetMode, StreamRate
 from nav_msgs.msg import Odometry
 from rcl_interfaces.msg import ParameterType
@@ -20,6 +20,46 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
+
+
+class ConsecutiveHealthGate:
+    """Latch health only after new, healthy samples; any bad sample resets it."""
+
+    def __init__(self, required_samples: int) -> None:
+        if required_samples < 1:
+            raise ValueError("required_samples must be positive")
+        self.required_samples = required_samples
+        self.consecutive_samples = 0
+        self.last_sample_id: int | None = None
+        self.last_failure_reasons: list[str] = []
+
+    def observe(
+        self, healthy: bool, reasons: list[str], sample_id: int | None = None
+    ) -> bool:
+        if not healthy:
+            self.consecutive_samples = 0
+            self.last_failure_reasons = list(reasons)
+        elif sample_id is None or sample_id != self.last_sample_id:
+            self.consecutive_samples += 1
+        self.last_sample_id = sample_id
+        return self.consecutive_samples >= self.required_samples
+
+
+_FCU_FAULT_TOKENS = (
+    "visodom: not healthy",
+    "visodom: roll/pitch diff",
+    "ekf variance",
+    "ekf failsafe",
+    "potential thrust loss",
+)
+
+
+def _fcu_fault_reason(text: str) -> str | None:
+    lowered = text.strip().lower()
+    for token in _FCU_FAULT_TOKENS:
+        if token in lowered:
+            return token
+    return None
 
 
 class P4MissionNode(Node):
@@ -58,6 +98,12 @@ class P4MissionNode(Node):
         self.declare_parameter("command_timeout_s", 8.0)
         self.declare_parameter("result_file", "")
         self.declare_parameter("extnav_status_topic", "/xq/p4/extnav/status")
+        self.declare_parameter("raw_odom_topic", "/localization/odom")
+        self.declare_parameter("health_gate_consecutive_samples", 8)
+        self.declare_parameter("health_status_max_age_s", 0.7)
+        self.declare_parameter("health_odom_max_age_s", 0.7)
+        self.declare_parameter("health_fault_window_s", 2.0)
+        self.declare_parameter("failsafe_termination_timeout_s", 90.0)
 
         prefix = str(self.get_parameter("mavros_prefix").value).rstrip("/")
         qos = QoSProfile(
@@ -73,6 +119,20 @@ class P4MissionNode(Node):
             str(self.get_parameter("extnav_status_topic").value),
             self._extnav_cb,
             reliable,
+        )
+        self.create_subscription(
+            Odometry,
+            str(self.get_parameter("raw_odom_topic").value),
+            self._raw_odom_cb,
+            reliable,
+        )
+        self.create_subscription(
+            StatusText,
+            f"{prefix}/statustext/recv",
+            self._status_text_cb,
+            # MAVROS publishes FCU status text with best-effort QoS in this
+            # setup; reliable would silently create an incompatible endpoint.
+            qos,
         )
         self.setpoint_publisher = self.create_publisher(
             PoseStamped, f"{prefix}/setpoint_position/local", 20
@@ -94,12 +154,38 @@ class P4MissionNode(Node):
         self.fcu_state = State()
         self.have_state = False
         self.have_odom = False
+        self.have_raw_odom = False
         self.current_xyz = (0.0, 0.0, 0.0)
         self.current_orientation = None
+        self.current_odom_stamp = 0.0
+        self.current_odom_frame_id = ""
+        self.current_odom_child_frame_id = ""
+        self.current_odom_last_wall = 0.0
+        self.current_odom_stamp_violations = 0
+        self.current_odom_max_gap_s = 0.0
+        self.raw_xyz = (0.0, 0.0, 0.0)
+        self.raw_orientation = None
+        self.raw_odom_stamp = 0.0
+        self.raw_odom_frame_id = ""
+        self.raw_odom_child_frame_id = ""
+        self.raw_odom_last_wall = 0.0
+        self.raw_odom_stamp_violations = 0
+        self.raw_odom_max_gap_s = 0.0
         self.origin_xyz = (0.0, 0.0, 0.0)
         self.target: tuple[float, float, float] | None = None
         self.extnav_status: dict[str, object] = {}
         self.extnav_last_wall = 0.0
+        self.fcu_status_texts: list[dict[str, object]] = []
+        self.last_fcu_fault: dict[str, object] | None = None
+        self.last_fcu_fault_key = ""
+        self.health_gate = ConsecutiveHealthGate(
+            int(self.get_parameter("health_gate_consecutive_samples").value)
+        )
+        self.health_stable = False
+        self.health_samples: list[dict[str, object]] = []
+        self.last_health_reason_key = ""
+        self.task_failure_reason: str | None = None
+        self.termination_reason: str | None = None
         self.verified_params: dict[str, int] = {}
         self.param_names = list(self.REQUIRED_PARAMS)
         self.param_index = 0
@@ -129,12 +215,45 @@ class P4MissionNode(Node):
         xyz = (float(p.x), float(p.y), float(p.z))
         if not all(math.isfinite(value) for value in xyz):
             return
+        stamp = self._message_stamp(message)
+        if self.have_odom and stamp <= self.current_odom_stamp:
+            self.current_odom_stamp_violations += 1
+        elif self.have_odom:
+            self.current_odom_max_gap_s = max(
+                self.current_odom_max_gap_s, stamp - self.current_odom_stamp
+            )
         self.current_xyz = xyz
         self.current_orientation = message.pose.pose.orientation
+        self.current_odom_stamp = stamp
+        self.current_odom_frame_id = str(message.header.frame_id)
+        self.current_odom_child_frame_id = str(message.child_frame_id)
+        self.current_odom_last_wall = time.monotonic()
         if not self.have_odom:
             self.origin_xyz = xyz
             self.have_odom = True
             self._event("FCU_ODOM_LOCK", f"origin={xyz}")
+
+    @staticmethod
+    def _message_stamp(message: Odometry) -> float:
+        return float(message.header.stamp.sec) + 1e-9 * float(message.header.stamp.nanosec)
+
+    def _raw_odom_cb(self, message: Odometry) -> None:
+        p = message.pose.pose.position
+        xyz = (float(p.x), float(p.y), float(p.z))
+        if not all(math.isfinite(value) for value in xyz):
+            return
+        stamp = self._message_stamp(message)
+        if self.have_raw_odom and stamp <= self.raw_odom_stamp:
+            self.raw_odom_stamp_violations += 1
+        elif self.have_raw_odom:
+            self.raw_odom_max_gap_s = max(self.raw_odom_max_gap_s, stamp - self.raw_odom_stamp)
+        self.raw_xyz = xyz
+        self.raw_orientation = message.pose.pose.orientation
+        self.raw_odom_stamp = stamp
+        self.raw_odom_frame_id = str(message.header.frame_id)
+        self.raw_odom_child_frame_id = str(message.child_frame_id)
+        self.raw_odom_last_wall = time.monotonic()
+        self.have_raw_odom = True
 
     def _extnav_cb(self, message: String) -> None:
         try:
@@ -144,6 +263,25 @@ class P4MissionNode(Node):
         if isinstance(status, dict):
             self.extnav_status = status
             self.extnav_last_wall = time.monotonic()
+
+    def _status_text_cb(self, message: StatusText) -> None:
+        text = str(message.text)
+        record = {
+            "elapsed_s": round(time.monotonic() - self.started, 3),
+            "severity": int(message.severity),
+            "text": text,
+        }
+        self.fcu_status_texts.append(record)
+        if len(self.fcu_status_texts) > 200:
+            self.fcu_status_texts = self.fcu_status_texts[-200:]
+        reason = _fcu_fault_reason(text)
+        if reason is None:
+            return
+        self.last_fcu_fault = {**record, "reason": reason}
+        key = f"{reason}:{text}"
+        if key != self.last_fcu_fault_key:
+            self.last_fcu_fault_key = key
+            self._event("FCU_HEALTH_FAULT", f"{reason}: {text}")
 
     def _event(self, kind: str, detail: str) -> None:
         record = {
@@ -307,15 +445,122 @@ class P4MissionNode(Node):
             self.pending_param = (name, self.param_client.call_async(request))
             self.last_param_request = now
 
-    def _nav_ready(self) -> bool:
-        status_fresh = time.monotonic() - self.extnav_last_wall <= 2.0
-        return bool(
-            self.have_odom
-            and status_fresh
-            and self.extnav_status.get("healthy") is True
-            and int(self.extnav_status.get("mavros_subscribers", 0)) > 0
-            and len(self.verified_params) == len(self.REQUIRED_PARAMS)
+    def _health_snapshot(self) -> dict[str, object]:
+        now = time.monotonic()
+        reasons: list[str] = []
+        status_age = now - self.extnav_last_wall if self.extnav_last_wall else math.inf
+        if status_age > float(self.get_parameter("health_status_max_age_s").value):
+            reasons.append("extnav_status_stale")
+        if self.extnav_status.get("healthy") is not True:
+            status_reasons = self.extnav_status.get("health_reasons", [])
+            if isinstance(status_reasons, list) and status_reasons:
+                reasons.extend(f"extnav:{item}" for item in status_reasons)
+            else:
+                reasons.append("extnav_unhealthy")
+        if int(self.extnav_status.get("mavros_subscribers", 0)) <= 0:
+            reasons.append("mavros_odom_subscriber_missing")
+        if not self.have_raw_odom:
+            reasons.append("raw_odom_missing")
+        elif now - self.raw_odom_last_wall > float(self.get_parameter("health_odom_max_age_s").value):
+            reasons.append("raw_odom_stale")
+        if self.raw_odom_stamp_violations:
+            reasons.append("raw_odom_stamp_nonmonotonic")
+        if not self.have_odom:
+            reasons.append("fcu_odom_missing")
+        elif now - self.current_odom_last_wall > float(self.get_parameter("health_odom_max_age_s").value):
+            reasons.append("fcu_odom_stale")
+        if self.current_odom_stamp_violations:
+            reasons.append("fcu_odom_stamp_nonmonotonic")
+        if not self.have_state or not self.fcu_state.connected:
+            reasons.append("fcu_disconnected")
+        if self.last_fcu_fault is not None:
+            fault_age = now - self.started - float(self.last_fcu_fault["elapsed_s"])
+            if fault_age <= float(self.get_parameter("health_fault_window_s").value):
+                reasons.append(f"fcu:{self.last_fcu_fault['reason']}")
+        return {
+            "healthy": not reasons,
+            "reasons": reasons,
+            "extnav_status_age_s": status_age if math.isfinite(status_age) else None,
+            "extnav_status_sequence": self.extnav_status.get("status_sequence"),
+            "extnav_status": dict(self.extnav_status),
+            "raw_odom": {
+                "received": self.have_raw_odom,
+                "age_s": now - self.raw_odom_last_wall if self.raw_odom_last_wall else None,
+                "stamp_s": self.raw_odom_stamp,
+                "frame_id": self.raw_odom_frame_id,
+                "child_frame_id": self.raw_odom_child_frame_id,
+                "xyz_m": list(self.raw_xyz),
+                "stamp_nonmonotonic": self.raw_odom_stamp_violations,
+                "max_gap_s": self.raw_odom_max_gap_s,
+            },
+            "fcu_odom": {
+                "received": self.have_odom,
+                "age_s": now - self.current_odom_last_wall if self.current_odom_last_wall else None,
+                "stamp_s": self.current_odom_stamp,
+                "frame_id": self.current_odom_frame_id,
+                "child_frame_id": self.current_odom_child_frame_id,
+                "xyz_m": list(self.current_xyz),
+                "stamp_nonmonotonic": self.current_odom_stamp_violations,
+                "max_gap_s": self.current_odom_max_gap_s,
+            },
+            "fcu_state": {
+                "connected": bool(self.fcu_state.connected),
+                "armed": bool(self.fcu_state.armed),
+                "guided": bool(self.fcu_state.guided),
+                "mode": str(self.fcu_state.mode),
+                "system_status": int(self.fcu_state.system_status),
+            },
+            "last_fcu_fault": self.last_fcu_fault,
+        }
+
+    def _observe_health(self, require_params: bool) -> tuple[bool, dict[str, object]]:
+        snapshot = self._health_snapshot()
+        reasons = list(snapshot["reasons"])
+        if require_params and len(self.verified_params) != len(self.REQUIRED_PARAMS):
+            reasons.append("fcu_parameters_incomplete")
+        healthy = not reasons
+        sample_id = snapshot.get("extnav_status_sequence")
+        sample_id = int(sample_id) if isinstance(sample_id, int) else None
+        stable = self.health_gate.observe(healthy, reasons, sample_id)
+        snapshot["healthy_for_gate"] = healthy
+        snapshot["gate_stable"] = stable
+        snapshot["gate_consecutive_samples"] = self.health_gate.consecutive_samples
+        snapshot["gate_required_samples"] = self.health_gate.required_samples
+        self.health_stable = stable
+        self.health_samples.append(
+            {
+                "elapsed_s": round(time.monotonic() - self.started, 3),
+                "phase": self.phase,
+                "sample": snapshot,
+            }
         )
+        if len(self.health_samples) > 4000:
+            self.health_samples = self.health_samples[-4000:]
+        reason_key = ",".join(reasons)
+        if not healthy and reason_key != self.last_health_reason_key:
+            self.last_health_reason_key = reason_key
+            self._event("HEALTH_UNHEALTHY", reason_key)
+        elif healthy and self.last_health_reason_key:
+            self.last_health_reason_key = ""
+            self._event("HEALTH_SAMPLE_RECOVERED", "current sample is healthy; gate is rebuilding")
+        return stable, snapshot
+
+    def _nav_ready(self) -> bool:
+        stable, _ = self._observe_health(require_params=True)
+        if stable:
+            self._event(
+                "HEALTH_GATE_PASS",
+                f"{self.health_gate.consecutive_samples} consecutive ExternalNav/EKF samples",
+            )
+        return stable
+
+    def _flight_health_loss(self, snapshot: dict[str, object]) -> None:
+        if self.finalized or self.phase in ("WAIT_FCU", "VERIFY_NAV", "LAND", "DESCEND", "FAILSAFE_WAIT"):
+            return
+        reasons = ",".join(str(item) for item in snapshot.get("reasons", [])) or "unknown"
+        self.task_failure_reason = f"flight health lost: {reasons}"
+        self._transition("FAILSAFE_WAIT", self.task_failure_reason)
+        self._event("TASK_FAILURE", self.task_failure_reason)
 
     def _distance_to_target(self) -> float:
         if self.target is None:
@@ -337,8 +582,13 @@ class P4MissionNode(Node):
         self.finalized = True
         self.phase = "DONE" if status == "PASS" else "FAILED"
         self._event(status, reason)
+        termination_confirmed = bool(self.have_state and not self.fcu_state.armed)
+        if termination_confirmed:
+            self.termination_reason = self.termination_reason or "FCU disarmed"
+        else:
+            self.termination_reason = self.termination_reason or "FCU remains armed or state unavailable"
         result = {
-            "schema_version": 1,
+            "schema_version": 2,
             "gate": "P4_GPS_OFF_EXTERNAL_NAV_CLOSED_LOOP",
             "status": status,
             "reason": reason,
@@ -347,6 +597,14 @@ class P4MissionNode(Node):
             "command_timeout_s": float(self.get_parameter("command_timeout_s").value),
             "verified_parameters": self.verified_params,
             "external_nav": self.extnav_status,
+            "health_gate": {
+                "required_consecutive_samples": self.health_gate.required_samples,
+                "last_consecutive_samples": self.health_gate.consecutive_samples,
+                "stable_before_failure": self.health_stable,
+                "last_failure_reasons": self.health_gate.last_failure_reasons,
+                "samples_recorded": len(self.health_samples),
+            },
+            "fcu_status_texts": self.fcu_status_texts,
             "completed_waypoints": self.completed_waypoints,
             "checks": {
                 "gps_disabled": self.verified_params.get("GPS_TYPE") == 0
@@ -359,6 +617,17 @@ class P4MissionNode(Node):
                 "square_and_return": len(self.completed_waypoints) == 4,
                 "landed_and_disarmed": not bool(self.fcu_state.armed),
             },
+            "task_result": {
+                "success": status == "PASS",
+                "failure_reason": None if status == "PASS" else (self.task_failure_reason or reason),
+            },
+            "termination": {
+                "confirmed": termination_confirmed,
+                "reason": self.termination_reason,
+                "armed": bool(self.fcu_state.armed),
+                "mode": self.fcu_state.mode,
+            },
+            "health_samples": self.health_samples,
             "final": {
                 "connected": bool(self.fcu_state.connected),
                 "armed": bool(self.fcu_state.armed),
@@ -388,7 +657,31 @@ class P4MissionNode(Node):
             self._finish("FAIL", f"mission timeout in {self.phase}")
             return
         if self.have_state and not self.fcu_state.connected and self.phase != "WAIT_FCU":
-            self._finish("FAIL", f"FCU disconnected in {self.phase}")
+            if self.phase == "FAILSAFE_WAIT":
+                pass
+            else:
+                self._flight_health_loss(self._health_snapshot())
+                if self.phase == "FAILSAFE_WAIT":
+                    return
+                self._finish("FAIL", f"FCU disconnected in {self.phase}")
+                return
+
+        if self.phase in ("SET_GUIDED", "ARM", "TAKEOFF", "ASCEND", "HOVER", "TRACK_SQUARE"):
+            _, snapshot = self._observe_health(require_params=False)
+            if not bool(snapshot["healthy_for_gate"]):
+                self._flight_health_loss(snapshot)
+                if self.phase == "FAILSAFE_WAIT":
+                    return
+
+        if self.phase == "FAILSAFE_WAIT":
+            if self.have_state and not self.fcu_state.armed:
+                self.termination_reason = "FCU disarmed after health loss"
+                self._event("TERMINATION_CONFIRMED", self.termination_reason)
+                self._finish("FAIL", f"{self.task_failure_reason or 'flight health lost'}; termination confirmed")
+            elif now - self.phase_started > float(self.get_parameter("failsafe_termination_timeout_s").value):
+                self.termination_reason = "FCU termination not confirmed before timeout"
+                self._event("TERMINATION_UNCONFIRMED", self.termination_reason)
+                self._finish("FAIL", f"{self.task_failure_reason or 'flight health lost'}; termination unconfirmed")
             return
 
         if self.phase == "WAIT_FCU":

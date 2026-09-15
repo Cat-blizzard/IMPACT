@@ -90,7 +90,9 @@ class P4ExternalNavNode(Node):
             self._odom_cb,
             reliable,
         )
-        self.create_timer(1.0, self._status_cb)
+        # Publish a sequenced health sample frequently enough for the mission
+        # gate to distinguish a live stream from one stale status message.
+        self.create_timer(0.2, self._status_cb)
 
         self.previous: tuple[float, tuple[float, float, float]] | None = None
         self.filtered_velocity = (0.0, 0.0, 0.0)
@@ -102,6 +104,14 @@ class P4ExternalNavNode(Node):
         self.differenced_velocity_count = 0
         self.last_source_wall = 0.0
         self.last_source_stamp = 0.0
+        self.last_source_gap_s = 0.0
+        self.max_source_gap_s = 0.0
+        self.source_stamp_monotonic_violations = 0
+        self.last_source_frame_id = ""
+        self.last_source_child_frame_id = ""
+        self.last_source_pose = (0.0, 0.0, 0.0)
+        self.last_source_orientation = (1.0, 0.0, 0.0, 0.0)
+        self.status_sequence = 0
         self.get_logger().info(
             "P4 ExternalNav adapter: /localization/odom -> MAVROS ODOMETRY; no ground truth input"
         )
@@ -140,6 +150,11 @@ class P4ExternalNavNode(Node):
         elif self.previous is not None:
             previous_stamp, previous_xyz = self.previous
             dt = stamp - previous_stamp
+            if dt <= 0.0:
+                self.source_stamp_monotonic_violations += 1
+            elif dt > 0.0:
+                self.last_source_gap_s = dt
+                self.max_source_gap_s = max(self.max_source_gap_s, dt)
             if 0.0 < dt <= self.maximum_gap:
                 map_velocity = tuple((xyz[i] - previous_xyz[i]) / dt for i in range(3))
                 raw_body = _world_to_body(map_velocity, q)
@@ -158,6 +173,10 @@ class P4ExternalNavNode(Node):
         self.source_count += 1
         self.last_source_wall = time.monotonic()
         self.last_source_stamp = stamp
+        self.last_source_frame_id = str(source.header.frame_id)
+        self.last_source_child_frame_id = str(source.child_frame_id)
+        self.last_source_pose = xyz
+        self.last_source_orientation = q
         self.sample_times.append(self.last_source_wall)
         cutoff = self.last_source_wall - 3.0
         while self.sample_times and self.sample_times[0] < cutoff:
@@ -188,9 +207,21 @@ class P4ExternalNavNode(Node):
         rate = (len(self.sample_times) - 1) / span if span > 0.0 else 0.0
         minimum_rate = float(self.get_parameter("minimum_healthy_rate_hz").value)
         subscribers = self.publisher.get_subscription_count()
+        reasons = []
+        if source_age > self.maximum_gap:
+            reasons.append("source_stale")
+        if rate < minimum_rate:
+            reasons.append("source_rate_low")
+        if subscribers <= 0:
+            reasons.append("mavros_subscriber_missing")
+        if self.source_stamp_monotonic_violations:
+            reasons.append("source_stamp_nonmonotonic")
+        self.status_sequence += 1
         status = {
-            "schema_version": 1,
-            "healthy": source_age <= self.maximum_gap and rate >= minimum_rate and subscribers > 0,
+            "schema_version": 2,
+            "status_sequence": self.status_sequence,
+            "healthy": not reasons,
+            "health_reasons": reasons,
             "source_count": self.source_count,
             "output_count": self.output_count,
             "rejected_count": self.rejected_count,
@@ -199,6 +230,13 @@ class P4ExternalNavNode(Node):
             "source_rate_hz": rate,
             "source_age_s": source_age if math.isfinite(source_age) else None,
             "source_stamp_s": self.last_source_stamp,
+            "source_last_gap_s": self.last_source_gap_s,
+            "source_max_gap_s": self.max_source_gap_s,
+            "source_stamp_monotonic_violations": self.source_stamp_monotonic_violations,
+            "source_frame_id": self.last_source_frame_id,
+            "source_child_frame_id": self.last_source_child_frame_id,
+            "source_pose_xyz": list(self.last_source_pose),
+            "source_orientation_wxyz": list(self.last_source_orientation),
             "mavros_subscribers": subscribers,
             "ground_truth_subscribed": False,
         }

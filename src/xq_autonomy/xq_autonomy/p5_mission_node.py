@@ -80,8 +80,13 @@ class P5MissionNode(P4MissionNode):
         self._event(status, reason)
         exploration = self.exploration_status
         adapter = self.ego_status
+        termination_confirmed = bool(self.have_state and not self.fcu_state.armed)
+        if termination_confirmed:
+            self.termination_reason = self.termination_reason or "FCU disarmed"
+        else:
+            self.termination_reason = self.termination_reason or "FCU remains armed or state unavailable"
         result = {
-            "schema_version": 1,
+            "schema_version": 2,
             "gate": "P5_BASELINE_MAP_FRONTIER_EGO",
             "baseline": "BASELINE_V1",
             "status": status,
@@ -91,6 +96,14 @@ class P5MissionNode(P4MissionNode):
             "command_timeout_s": float(self.get_parameter("command_timeout_s").value),
             "verified_parameters": self.verified_params,
             "external_nav": self.extnav_status,
+            "health_gate": {
+                "required_consecutive_samples": self.health_gate.required_samples,
+                "last_consecutive_samples": self.health_gate.consecutive_samples,
+                "stable_before_failure": self.health_stable,
+                "last_failure_reasons": self.health_gate.last_failure_reasons,
+                "samples_recorded": len(self.health_samples),
+            },
+            "fcu_status_texts": self.fcu_status_texts,
             "exploration": exploration,
             "ego_adapter": adapter,
             "bspline_count": self.bspline_count,
@@ -106,6 +119,17 @@ class P5MissionNode(P4MissionNode):
                 "auto_finished": exploration.get("finished") is True,
                 "landed_and_disarmed": not bool(self.fcu_state.armed),
             },
+            "task_result": {
+                "success": status == "PASS",
+                "failure_reason": None if status == "PASS" else (self.task_failure_reason or reason),
+            },
+            "termination": {
+                "confirmed": termination_confirmed,
+                "reason": self.termination_reason,
+                "armed": bool(self.fcu_state.armed),
+                "mode": self.fcu_state.mode,
+            },
+            "health_samples": self.health_samples,
             "final": {
                 "connected": bool(self.fcu_state.connected),
                 "armed": bool(self.fcu_state.armed),
@@ -137,7 +161,28 @@ class P5MissionNode(P4MissionNode):
             self._finish("FAIL", f"mission timeout in {self.phase}")
             return
         if self.have_state and not self.fcu_state.connected and self.phase != "WAIT_FCU":
-            self._finish("FAIL", f"FCU disconnected in {self.phase}")
+            if self.phase != "FAILSAFE_WAIT":
+                self._flight_health_loss(self._health_snapshot())
+            if self.phase != "FAILSAFE_WAIT":
+                self._finish("FAIL", f"FCU disconnected in {self.phase}")
+                return
+
+        if self.phase in ("SET_GUIDED", "ARM", "TAKEOFF", "ASCEND", "EXPLORE_START", "EXPLORE"):
+            _, snapshot = self._observe_health(require_params=False)
+            if not bool(snapshot["healthy_for_gate"]):
+                self._flight_health_loss(snapshot)
+                if self.phase == "FAILSAFE_WAIT":
+                    return
+
+        if self.phase == "FAILSAFE_WAIT":
+            if self.have_state and not self.fcu_state.armed:
+                self.termination_reason = "FCU disarmed after health loss"
+                self._event("TERMINATION_CONFIRMED", self.termination_reason)
+                self._finish("FAIL", f"{self.task_failure_reason or 'flight health lost'}; termination confirmed")
+            elif now - self.phase_started > float(self.get_parameter("failsafe_termination_timeout_s").value):
+                self.termination_reason = "FCU termination not confirmed before timeout"
+                self._event("TERMINATION_UNCONFIRMED", self.termination_reason)
+                self._finish("FAIL", f"{self.task_failure_reason or 'flight health lost'}; termination unconfirmed")
             return
 
         if self.phase == "WAIT_FCU":

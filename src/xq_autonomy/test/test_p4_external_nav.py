@@ -10,7 +10,11 @@ from xq_autonomy.p4_external_nav_node import (
     _reported_body_velocity,
     _world_to_body,
 )
-from xq_autonomy.p4_mission_node import P4MissionNode
+from xq_autonomy.p4_mission_node import (
+    ConsecutiveHealthGate,
+    P4MissionNode,
+    _fcu_fault_reason,
+)
 
 
 def test_world_velocity_is_rotated_into_body_frame() -> None:
@@ -61,3 +65,35 @@ def test_position_setpoints_cannot_cancel_guided_takeoff() -> None:
 def test_ros_not_set_is_distinct_from_a_real_fcu_parameter_value() -> None:
     assert ParameterType.PARAMETER_NOT_SET == 0
     assert ParameterType.PARAMETER_INTEGER != ParameterType.PARAMETER_NOT_SET
+
+
+def test_health_gate_requires_new_consecutive_samples_and_resets_on_fault() -> None:
+    gate = ConsecutiveHealthGate(3)
+    assert not gate.observe(True, [], sample_id=1)
+    assert not gate.observe(True, [], sample_id=1)
+    assert not gate.observe(True, [], sample_id=2)
+    assert gate.observe(True, [], sample_id=3)
+    assert not gate.observe(False, ["fcu:ekf variance"], sample_id=4)
+    assert gate.consecutive_samples == 0
+    assert not gate.observe(True, [], sample_id=4)
+    assert gate.observe(True, [], sample_id=5) is False
+    assert gate.observe(True, [], sample_id=6) is False
+    assert gate.observe(True, [], sample_id=7) is True
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    (
+        ("PreArm: VisOdom: not healthy", "visodom: not healthy"),
+        ("PreArm: VisOdom: roll/pitch diff 13.5 deg (>10)", "visodom: roll/pitch diff"),
+        ("EKF variance", "ekf variance"),
+        ("EKF Failsafe: changed to LAND Mode", "ekf failsafe"),
+        ("Potential Thrust Loss (3)", "potential thrust loss"),
+    ),
+)
+def test_fcu_fault_text_is_classified(text: str, reason: str) -> None:
+    assert _fcu_fault_reason(text) == reason
+
+
+def test_benign_fcu_text_is_not_classified_as_fault() -> None:
+    assert _fcu_fault_reason("EKF3 lane switch 0") is None
