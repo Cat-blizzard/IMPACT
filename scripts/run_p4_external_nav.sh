@@ -8,20 +8,23 @@ ardupilot_root="${ARDUPILOT_ROOT:-/home/accelerate/ardupilot}"
 plugin_root="${ARDUPILOT_GAZEBO_ROOT:-/home/accelerate/ardupilot_gazebo}"
 build_manifest="${IMPACT_BUILD_MANIFEST:-${install_root}/.xq_build_manifest.json}"
 requested_run_dir=""
+profile="server_gpu"
 minimum_eval_duration_s=70
 
 usage() {
-  echo "Usage: $0 [--minimum-eval-duration SECONDS] [--run-dir PATH]" >&2
+  echo "Usage: $0 [--profile local_cpu|server_gpu] [--minimum-eval-duration SECONDS] [--run-dir PATH]" >&2
 }
 
 while (($#)); do
   case "$1" in
+    --profile) profile="$2"; shift 2 ;;
     --minimum-eval-duration) minimum_eval_duration_s="$2"; shift 2 ;;
     --run-dir) requested_run_dir="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 2 ;;
   esac
 done
+[[ "$profile" == local_cpu || "$profile" == server_gpu ]] || { echo "Invalid profile" >&2; exit 2; }
 [[ "${minimum_eval_duration_s}" =~ ^[1-9][0-9]*$ ]] || {
   echo "Invalid minimum evaluation duration." >&2; exit 2;
 }
@@ -72,11 +75,12 @@ export ROS_LOCALHOST_ONLY=1
 export ROS2CLI_NO_DAEMON=1
 export GZ_PARTITION="xq_p4_${USER:-wsl}_${timestamp}_$$"
 export ROS_LOG_DIR="${run_dir}/ros_logs"
-export LIBGL_ALWAYS_SOFTWARE=1
-export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
-export GALLIUM_DRIVER=llvmpipe
-export EGL_PLATFORM=surfaceless
-export QT_QPA_PLATFORM=offscreen
+if [[ "$profile" == local_cpu ]]; then
+  export LIBGL_ALWAYS_SOFTWARE=1 MESA_LOADER_DRIVER_OVERRIDE=llvmpipe GALLIUM_DRIVER=llvmpipe
+  export EGL_PLATFORM=surfaceless QT_QPA_PLATFORM=offscreen
+else
+  export MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
+fi
 export GZ_SIM_RESOURCE_PATH="${install_root}/xq_gz_assets/share/xq_gz_assets/models:${plugin_root}/models:${plugin_root}/worlds"
 export IGN_GAZEBO_RESOURCE_PATH="${GZ_SIM_RESOURCE_PATH}"
 export SDF_PATH="${GZ_SIM_RESOURCE_PATH}"
@@ -90,7 +94,8 @@ evaluation_result="${run_dir}/localization-evaluation.json"
 
 cat >"${run_dir}/run.env" <<EOF
 run_started_utc=${timestamp}
-minimum_eval_duration_s=${minimum_eval_duration_s}
+  minimum_eval_duration_s=${minimum_eval_duration_s}
+  profile=${profile}
 ros_domain_id=${ROS_DOMAIN_ID}
 gz_partition=${GZ_PARTITION}
   world=${world}
@@ -244,8 +249,9 @@ start_group mavros "${run_dir}/mavros.log" \
   fcu_url:=tcp://127.0.0.1:5760 namespace:=uav1/mavros
 wait_log "${run_dir}/sitl.log" "Loaded defaults" 45 "ArduPilot defaults"
 
-start_group gazebo "${run_dir}/gazebo.log" \
-  gz sim -r -s --headless-rendering -v 3 "${world}"
+gz_args=(-r -s -v 3)
+[[ "$profile" == local_cpu ]] && gz_args+=(--headless-rendering)
+start_group gazebo "${run_dir}/gazebo.log" gz sim "${gz_args[@]}" "${world}"
 wait_log "${run_dir}/sitl.log" "JSON received" 90 "SITL-Gazebo JSON link"
 wait_log "${run_dir}/mavros.log" "Got HEARTBEAT" 60 "MAVROS heartbeat"
 
