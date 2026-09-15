@@ -96,10 +96,10 @@ python3 "$root/scripts/wait_for_odometry.py" --topic /localization/odom --timeou
 phase="wait_integrity"
 timeout 30 ros2 topic echo --no-daemon --once /integrity/directional >"$run/first-integrity.txt"
 phase="audit_runtime_graph"
-ros2 topic info --no-daemon /xq/eval/p5/ground_truth -v >"$run/truth-graph.txt"
-ros2 topic info --no-daemon /uav1/mavros/setpoint_position/local -v >"$run/setpoint-graph.txt"
-ros2 topic info --no-daemon /xq/p4/extnav/status -v >"$run/extnav-status-graph.txt"
-ros2 topic info --no-daemon /uav1/mavros/odometry/out -v >"$run/extnav-output-graph.txt"
+ros2 topic info /xq/eval/p5/ground_truth -v >"$run/truth-graph.txt"
+ros2 topic info /uav1/mavros/setpoint_position/local -v >"$run/setpoint-graph.txt"
+ros2 topic info /xq/p4/extnav/status -v >"$run/extnav-status-graph.txt"
+ros2 topic info /uav1/mavros/odometry/out -v >"$run/extnav-output-graph.txt"
 audit_args=("$run" "$profile")
 [[ "${IMPACT_SMOKE_ONLY:-0}" == 1 ]] && audit_args+=(--smoke)
 python3 "$root/scripts/impact_runtime_audit.py" "${audit_args[@]}"
