@@ -58,7 +58,9 @@ wait_log() {
 }
 graph_probe() {
   topic="$1"; output="$2"
-  timeout 15 ros2 topic info "$topic" -v >"$output"
+  if ! timeout 15 ros2 topic info "$topic" -v >"$output" 2>&1; then
+    printf 'probe_exit_nonzero=true\n' >>"$output"
+  fi
   printf '%s\n' "$(date -Is)" >"${output%.txt}-collected-at.txt"
 }
 sha256sum "$ARDUPILOT_ROOT/build/sitl/bin/arducopter" \

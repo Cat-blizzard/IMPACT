@@ -59,8 +59,6 @@ def setup(context):
             calibration_file=str(run / "calibration.json"), goal=config["configuration"]["goal_lio_m"], speed_limit=speed,
             event_file=str(run / "events.jsonl"))),
         autonomy("impact_arbiter", dict(session_id=session)),
-        autonomy("impact_mission", dict(session_id=session, result_file=str(run / "mission.json"),
-            task_timeout_sim_s=config["configuration"]["task_timeout_sim_s"])),
         autonomy("impact_evaluator", dict(result_dir=str(run), scenario_file=str(run / "scenario.json"))),
     ]
     return nodes
