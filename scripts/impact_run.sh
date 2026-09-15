@@ -116,6 +116,10 @@ if [[ "${IMPACT_SMOKE_ONLY:-0}" == 1 ]]; then
   phase="smoke_observation"
   python3 "$root/scripts/startup_smoke_monitor.py" --seconds 30 --output "$run/smoke-observation.json"
   phase="smoke_bag_validation"
+  rosbag_pid="$(cat "$run/rosbag.pid")"
+  kill -INT -- "-$rosbag_pid" 2>/dev/null || true
+  wait "$rosbag_pid" 2>/dev/null || true
+  printf 'rosbag_pid=%s exit_recorded=true\n' "$rosbag_pid" >"$run/smoke-rosbag-stop.txt"
   timeout 20 ros2 bag info "$run/rosbag" >"$run/smoke-bag-info.txt"
   python3 - "$run" <<'PY'
 import json, pathlib, sys
