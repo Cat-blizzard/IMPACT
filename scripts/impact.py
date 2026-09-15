@@ -228,6 +228,8 @@ def experiment(args):
         report["status"] = "RUNNING"
         write_json(run/"run.json", report)
         env = runtime_env(args.profile, run)
+        if getattr(args, "smoke", False):
+            env["IMPACT_SMOKE_ONLY"] = "1"
         with slot_lock(), open(run/"launcher.log", "w") as log:
             process = subprocess.Popen(["bash",str(ROOT/"scripts/impact_run.sh"), str(run), args.profile],
                                        env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
@@ -240,6 +242,10 @@ def experiment(args):
                     os.killpg(process.pid, signal.SIGKILL)
                     process.wait()
                 raise RuntimeError("launcher interrupted or wall watchdog expired")
+        if getattr(args, "smoke", False):
+            report.update(smoke=read_json(run/"smoke.json"), launcher_exit_code=code,
+                          status="PASS" if code == 0 else "ERROR", completed_record=code == 0)
+            return run, report
         mission = read_json(run/"mission.json")
         evaluation = read_json(run/"evaluation.json")
         performance(run)
@@ -503,14 +509,15 @@ def main():
     d.add_argument("--runtime", action="store_true")
     b = sub.add_parser("build"); b.add_argument("--cpu-only", action="store_true")
     t=sub.add_parser("test"); t.add_argument("--pure", action="store_true")
-    for name in ("run", "stage-a", "batch", "validate-server"):
+    for name in ("run", "stage-a", "smoke", "batch", "validate-server"):
         s = sub.add_parser(name)
         s.add_argument("--profile", choices=("local_cpu","server_gpu"), default="server_gpu")
         s.add_argument("--results", default=str(ROOT/"experiments/results/impact_v1"))
-        if name in ("run", "stage-a"):
+        if name in ("run", "stage-a", "smoke"):
             s.add_argument("--scenario", choices=config()["scenarios"], default="normal")
             s.add_argument("--strategy", choices=config()["strategies"], default="recovery")
             s.add_argument("--seed", type=int, default=1000)
+        if name == "smoke": s.set_defaults(smoke=True)
         elif name == "batch":
             s.add_argument("--jobs", type=int, default=1)
             s.add_argument("--validation",default=str(ROOT/"experiments/results/impact_v1/server-validation.json"))
@@ -527,6 +534,7 @@ def main():
         elif args.command == "test": return tests(args.pure)
         elif args.command == "run": return 0 if experiment(args)[1]["status"] == "PASS" else 1
         elif args.command == "stage-a": return stage_a(args)
+        elif args.command == "smoke": return 0 if experiment(args)[1]["status"] == "PASS" else 1
         elif args.command == "batch": batch(args)
         elif args.command == "validate-server": validate_server(args)
         elif args.command == "bundle": print(bundle(args.run_dir))
