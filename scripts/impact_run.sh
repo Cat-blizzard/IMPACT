@@ -26,7 +26,13 @@ cleanup() {
   printf 'exit_code=%s phase=%s\n' "$status" "$phase" >>"$run/cleanup-started-at.txt"
   for pid in "${pids[@]}"; do printf 'pid=%s alive=%s\n' "$pid" "$(kill -0 "$pid" 2>/dev/null && echo true || echo false)" >>"$run/cleanup-started-at.txt"; done
   trap - EXIT INT TERM
-  for pid in "${pids[@]}"; do kill -INT -- "-$pid" 2>/dev/null || true; done
+  for pid in "${pids[@]}"; do
+    if [[ -f "$run/gazebo.pid" && "$pid" == "$(cat "$run/gazebo.pid")" ]]; then
+      kill -TERM -- "-$pid" 2>/dev/null || true
+    else
+      kill -INT -- "-$pid" 2>/dev/null || true
+    fi
+  done
   for _ in {1..10}; do
     alive=false
     for pid in "${pids[@]}"; do kill -0 "$pid" 2>/dev/null && alive=true; done
@@ -126,10 +132,12 @@ import json, pathlib, sys
 r=pathlib.Path(sys.argv[1]); obs=json.loads((r/'smoke-observation.json').read_text())
 info=(r/'smoke-bag-info.txt').read_text()
 gaz=(r/'gazebo.log').read_text(errors='replace')
+launch=(r/'launcher.log').read_text(errors='replace')
 result={'mode':'NO_ARM_NO_TAKEOFF','observation':obs,'bag_readable':bool(info.strip()),
         'gazebo_exit_evidence':{'signaled': 'Segmentation fault' in gaz or 'core dumped' in gaz,
-                                'log_tail':gaz[-1000:]}}
-result['passed']=result['bag_readable'] and obs['fcu_armed_count']==0 and obs['metrics']['odom']['count']>0 and obs['metrics']['extnav']['count']>0
+                                'launcher_signaled': 'Segmentation fault' in launch or 'core dumped' in launch,
+                                'log_tail':(gaz+'\n'+launch)[-1000:]}}
+result['passed']=result['bag_readable'] and not result['gazebo_exit_evidence']['signaled'] and not result['gazebo_exit_evidence']['launcher_signaled'] and obs['fcu_armed_count']==0 and obs['metrics']['odom']['count']>0 and obs['metrics']['extnav']['count']>0
 (r/'smoke.json').write_text(json.dumps(result,indent=2)+'\n')
 raise SystemExit(0 if result['passed'] else 1)
 PY
