@@ -136,21 +136,23 @@ IMPACT 因此引入两个量。
 
 导航系统在给定置信水平下能够保证的定位误差范围：
 
-[PL(\mathbf d)]
+```math
+PL(\mathbf{d})
+```
 
 ### Alert Limit — `AL`
 
 当前环境、机体尺寸、障碍净空与任务允许的最大定位误差：
 
-[
-AL(\mathbf d)
-]
+```math
+AL(\mathbf{d})
+```
 
 最终定义导航完整性裕度：
 
-[
+```math
 \boxed{M = AL - PL}
-]
+```
 
 因此：
 
@@ -243,12 +245,9 @@ IMPACT 不把 FAST-LIO2、Frontier 或 EGO-Planner 重新命名为“自研算�
 
 FAST-LIO2 不仅输出位姿，还从实际点到面更新中构造方向信息矩阵：
 
-[
-\Lambda_p
-=========
-
-\sum_i w_i \mathbf n_i\mathbf n_i^\top
-]
+```math
+\Lambda_p = \sum_i w_i \mathbf{n}_i \mathbf{n}_i^{\top}
+```
 
 进一步得到：
 
@@ -307,9 +306,9 @@ cost += λ * localization_uncertainty
 
 而作为 **硬约束**：
 
-[
+```math
 M_{\min}(\tau) \ge M_{\text{reserve}}
-]
+```
 
 如果一条轨迹不能保证足够的导航完整性，即使它：
 
@@ -344,20 +343,15 @@ M_{\min}(\tau) \ge M_{\text{reserve}}
 
 IMPACT 将使用高分位端到端延迟：
 
-[
+```math
 L_{p99}
-]
+```
 
 计算延迟导致的额外运动距离：
 
-[
-r_{\text{latency}}
-==================
-
-vL_{p99}
-+
-\frac{1}{2}a_{\max}L_{p99}^2
-]
+```math
+r_{\text{latency}} = v L_{p99} + \frac{1}{2} a_{\max} L_{p99}^{2}
+```
 
 并直接缩小 `AL`。
 
@@ -797,15 +791,15 @@ Hardware Deployment
 
 已实现：
 
-[
+```math
 M_j(t)=AL_j(t)-PL_j(t)
-]
+```
 
 以及：
 
-[
+```math
 M_{\min}(\tau)=\min_{t,j}M_j(t)
-]
+```
 
 轨迹认证：
 
@@ -864,23 +858,21 @@ Find minimum-cost candidate with M > 0
 
 将 Frontier 从：
 
-[
-\max ; InformationGain-\lambda Distance
-]
+```math
+\max \quad \mathrm{InformationGain} - \lambda\,\mathrm{Distance}
+```
 
 升级为：
 
-[
-\max_\tau
-\quad
-InformationGain-\lambda_TT-\lambda_EE
-]
+```math
+\max_{\tau} \quad \mathrm{InformationGain} - \lambda_T T - \lambda_E E
+```
 
 subject to：
 
-[
+```math
 M_{\min}(\tau)\ge M_{\text{reserve}}
-]
+```
 
 使安全完整性成为硬约束，而不是可被其他收益抵消的软权重。
 
