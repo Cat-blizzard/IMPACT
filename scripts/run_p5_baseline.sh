@@ -248,7 +248,10 @@ else
   start_group p5_stack "${run_dir}/p5-stack.log" ros2 launch xq_sim_bringup xq_p5_baseline.launch.py evaluation_result_file:="${evaluation_result}"
 fi
 
-timeout 110 ros2 topic echo --once /localization/odom >"${run_dir}/first-localization-odom.txt" 2>&1 || {
+python3 "${script_dir}/wait_for_odometry.py" \
+  --topic /localization/odom --timeout 110 \
+  --output "${run_dir}/first-localization-odom.txt" \
+  --diagnostics "${run_dir}/first-localization-odom.diagnostics.json" || {
   echo "FAST-LIO did not publish." >&2; exit 5;
 }
 if [[ "${phase6}" == true ]]; then
@@ -257,15 +260,15 @@ if [[ "${phase6}" == true ]]; then
   }
 fi
 assert_core_alive
-ros2 topic list -t >"${run_dir}/ros-topics.txt"
-ros2 node list >"${run_dir}/ros-nodes.txt"
-ros2 topic info /xq/p5/frontier_goal -v >"${run_dir}/frontier-goal-graph.txt"
-ros2 topic info /xq/eval/p5/ground_truth -v >"${run_dir}/ground-truth-graph.txt"
+ros2 topic list --no-daemon --spin-time 2 -t >"${run_dir}/ros-topics.txt"
+ros2 node list --no-daemon >"${run_dir}/ros-nodes.txt"
+ros2 topic info --no-daemon /xq/p5/frontier_goal -v >"${run_dir}/frontier-goal-graph.txt"
+ros2 topic info --no-daemon /xq/eval/p5/ground_truth -v >"${run_dir}/ground-truth-graph.txt"
 if [[ "${phase6}" == true ]]; then
-  ros2 node info /xq_p6_directional_integrity >"${run_dir}/p6-node-graph.txt"
+  ros2 node info --no-daemon /xq_p6_directional_integrity >"${run_dir}/p6-node-graph.txt"
 fi
 if [[ "${phase8}" == true ]]; then
-  ros2 node info /xq_p8_alert_limit >"${run_dir}/p8-node-graph.txt"
+  ros2 node info --no-daemon /xq_p8_alert_limit >"${run_dir}/p8-node-graph.txt"
 fi
 
 start_group mission "${run_dir}/mission.log" ros2 run xq_autonomy xq_p5_mission --ros-args \
