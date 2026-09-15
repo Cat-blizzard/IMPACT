@@ -20,6 +20,18 @@ def check_graph(truth, setpoint):
         sole_setpoint_publisher=bool(count and count[1] == "1" and owner))
 
 
+def check_extnav(status_text, output_text):
+    """Reject duplicate/stale ExternalNav adapters before arming."""
+    pub = re.search(r"Publisher count: (\d+)", status_text)
+    owner = "Node name: xq_p4_external_nav" in status_text
+    out_pub = re.search(r"Publisher count: (\d+)", output_text)
+    out_sub = "Node name: xq_p4_external_nav" in output_text
+    return dict(status_publisher_count=int(pub[1]) if pub else None,
+                status_single_publisher=bool(pub and pub[1] == "1" and owner),
+                output_publisher_count=int(out_pub[1]) if out_pub else None,
+                adapter_output_subscription=out_sub)
+
+
 def renderer_maps(pid):
     """Collect only this run's Gazebo process group, never a global glxinfo substitute."""
     import os
@@ -42,8 +54,16 @@ def renderer_maps(pid):
 def main():
     run, profile = Path(sys.argv[1]), sys.argv[2]
     data = check_graph((run/"truth-graph.txt").read_text(), (run/"setpoint-graph.txt").read_text())
+    status_graph = run/"extnav-status-graph.txt"
+    output_graph = run/"extnav-output-graph.txt"
+    data["extnav"] = check_extnav(
+        status_graph.read_text() if status_graph.exists() else "",
+        output_graph.read_text() if output_graph.exists() else "",
+    )
     data.update(renderer_maps(int((run/"gazebo.pid").read_text())))
-    data["passed"] = data["truth_isolation"] and data["sole_setpoint_publisher"]
+    data["passed"] = (data["truth_isolation"] and data["sole_setpoint_publisher"]
+                      and data["extnav"]["status_single_publisher"]
+                      and data["extnav"]["adapter_output_subscription"])
     if profile == "server_gpu":
         data["passed"] &= data["hardware_driver_mapped"] and not data["software_driver_mapped"]
     (run/"runtime-audit.json").write_text(json.dumps(data,indent=2)+"\n")
