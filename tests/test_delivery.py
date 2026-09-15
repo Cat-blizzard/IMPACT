@@ -6,6 +6,7 @@ import pytest
 import impact
 from impact_scenarios import scenario_geometry, generate
 from impact_runtime_audit import check_graph
+from impact_runtime_audit import check_extnav
 
 
 def test_seed_changes_real_geometry_and_paired_arms_share_world(tmp_path):
@@ -49,6 +50,18 @@ def test_graph_audit_checks_endpoint_owners():
     assert result["truth_isolation"] and result["sole_setpoint_publisher"]
     assert not check_graph(truth+"\nNode name: impact_supervisor\nEndpoint type: SUBSCRIPTION\n",setpoint)["truth_isolation"]
     assert not check_graph(truth,setpoint.replace("count: 1","count: 2"))["sole_setpoint_publisher"]
+
+
+def test_extnav_graph_checks_direction_and_unique_endpoints():
+    status = "Publisher count: 1\nNode name: xq_p4_external_nav\nEndpoint type: PUBLISHER\nGID: aa\n"
+    output = ("Publisher count: 1\nNode name: xq_p4_external_nav\nEndpoint type: PUBLISHER\nGID: aa\n"
+              "Subscription count: 1\nNode name: mavros\nEndpoint type: SUBSCRIPTION\nGID: bb\n")
+    result = check_extnav(status, output)
+    assert result["status_single_publisher"]
+    assert result["output_single_adapter_publisher"]
+    assert result["mavros_output_subscription"]
+    duplicate = status + status.replace("GID: aa", "GID: cc")
+    assert not check_extnav(duplicate, output)["status_single_publisher"]
 
 
 def test_busy_port_is_not_stolen(monkeypatch,tmp_path):

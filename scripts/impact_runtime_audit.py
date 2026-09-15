@@ -22,14 +22,26 @@ def check_graph(truth, setpoint):
 
 def check_extnav(status_text, output_text):
     """Reject duplicate/stale ExternalNav adapters before arming."""
-    pub = re.search(r"Publisher count: (\d+)", status_text)
-    owner = "Node name: xq_p4_external_nav" in status_text
-    out_pub = re.search(r"Publisher count: (\d+)", output_text)
-    out_sub = "Node name: xq_p4_external_nav" in output_text
-    return dict(status_publisher_count=int(pub[1]) if pub else None,
-                status_single_publisher=bool(pub and pub[1] == "1" and owner),
-                output_publisher_count=int(out_pub[1]) if out_pub else None,
-                adapter_output_subscription=out_sub)
+    def endpoints(text, kind):
+        result = []
+        for section in re.split(r"\n(?=Node name:)", text):
+            if f"Endpoint type: {kind}" not in section:
+                continue
+            node = re.search(r"Node name: (\S+)", section)
+            gid = re.search(r"GID: ([0-9a-fA-F]+)", section)
+            result.append({"node": node[1] if node else None, "gid": gid[1] if gid else None})
+        return result
+    status_publishers = endpoints(status_text, "PUBLISHER")
+    output_publishers = endpoints(output_text, "PUBLISHER")
+    output_subscribers = endpoints(output_text, "SUBSCRIPTION")
+    return dict(status_publishers=status_publishers,
+                status_single_publisher=(len(status_publishers) == 1 and
+                                         status_publishers[0]["node"] == "xq_p4_external_nav"),
+                output_publishers=output_publishers,
+                output_single_adapter_publisher=(len(output_publishers) == 1 and
+                                                 output_publishers[0]["node"] == "xq_p4_external_nav"),
+                output_subscribers=output_subscribers,
+                mavros_output_subscription=any("mavros" in x["node"] for x in output_subscribers))
 
 
 def renderer_maps(pid):
@@ -63,7 +75,8 @@ def main():
     data.update(renderer_maps(int((run/"gazebo.pid").read_text())))
     data["passed"] = (data["truth_isolation"] and data["sole_setpoint_publisher"]
                       and data["extnav"]["status_single_publisher"]
-                      and data["extnav"]["adapter_output_subscription"])
+                      and data["extnav"]["output_single_adapter_publisher"]
+                      and data["extnav"]["mavros_output_subscription"])
     if profile == "server_gpu":
         data["passed"] &= data["hardware_driver_mapped"] and not data["software_driver_mapped"]
     (run/"runtime-audit.json").write_text(json.dumps(data,indent=2)+"\n")

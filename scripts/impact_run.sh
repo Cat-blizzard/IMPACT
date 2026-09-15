@@ -74,12 +74,12 @@ start rosbag ros2 bag record -o "$run/rosbag" \
  /impact/arbiter_status /uav1/mavros/state /uav1/mavros/local_position/odom \
  /uav1/mavros/setpoint_position/local /xq/eval/p5/ground_truth /xq/p4/extnav/status
 start stack ros2 launch xq_sim_bringup impact_sitl.launch.py run_dir:="$run"
-timeout 120 ros2 topic echo --once /localization/odom >"$run/first-odom.txt"
-timeout 30 ros2 topic echo --once /integrity/directional >"$run/first-integrity.txt"
-ros2 topic info /xq/eval/p5/ground_truth -v >"$run/truth-graph.txt"
-ros2 topic info /uav1/mavros/setpoint_position/local -v >"$run/setpoint-graph.txt"
-ros2 topic info /xq/p4/extnav/status -v >"$run/extnav-status-graph.txt"
-ros2 topic info /uav1/mavros/odometry/out -v >"$run/extnav-output-graph.txt"
+timeout 120 ros2 topic echo --no-daemon --once /localization/odom >"$run/first-odom.txt"
+timeout 30 ros2 topic echo --no-daemon --once /integrity/directional >"$run/first-integrity.txt"
+ros2 topic info --no-daemon /xq/eval/p5/ground_truth -v >"$run/truth-graph.txt"
+ros2 topic info --no-daemon /uav1/mavros/setpoint_position/local -v >"$run/setpoint-graph.txt"
+ros2 topic info --no-daemon /xq/p4/extnav/status -v >"$run/extnav-status-graph.txt"
+ros2 topic info --no-daemon /uav1/mavros/odometry/out -v >"$run/extnav-output-graph.txt"
 python3 "$root/scripts/impact_runtime_audit.py" "$run" "$profile"
 session="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["session_id"])' "$run/run.json")"
 task_timeout="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["configuration"]["task_timeout_sim_s"])' "$run/run.json")"
