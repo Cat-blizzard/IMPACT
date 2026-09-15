@@ -55,7 +55,8 @@ def test_graph_audit_checks_endpoint_owners():
 def test_extnav_graph_checks_direction_and_unique_endpoints():
     status = "Publisher count: 1\nNode name: xq_p4_external_nav\nEndpoint type: PUBLISHER\nGID: aa\n"
     output = ("Publisher count: 1\nNode name: xq_p4_external_nav\nEndpoint type: PUBLISHER\nGID: aa\n"
-              "Subscription count: 1\nNode name: mavros\nEndpoint type: SUBSCRIPTION\nGID: bb\n")
+              "Subscription count: 1\nNode name: odometry\nNode namespace: /uav1/mavros\n"
+              "Endpoint type: SUBSCRIPTION\nGID: bb\n")
     result = check_extnav(status, output)
     assert result["status_single_publisher"]
     assert result["output_single_adapter_publisher"]
