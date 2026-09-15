@@ -103,6 +103,8 @@ python3 "$root/scripts/wait_for_odometry.py" --topic /localization/odom --timeou
 phase="wait_integrity"
 timeout 30 ros2 topic echo --no-daemon --once /integrity/directional >"$run/first-integrity.txt"
 phase="audit_runtime_graph"
+ros2 daemon stop >"$run/ros-daemon-stop.txt" 2>&1 || true
+timeout 10 ros2 daemon start >"$run/ros-daemon-start.txt" 2>&1
 graph_probe /xq/eval/p5/ground_truth "$run/truth-graph.txt"
 graph_probe /uav1/mavros/setpoint_position/local "$run/setpoint-graph.txt"
 graph_probe /xq/p4/extnav/status "$run/extnav-status-graph.txt"
