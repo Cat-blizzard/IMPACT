@@ -7,6 +7,10 @@ namespace ego_planner
   void EGOReplanFSM::init(rclcpp::Node::SharedPtr &node)
   {
     node_ = node;
+    impact_mode_ = node_->declare_parameter("fsm/impact_mode", false);
+    impact_session_ = node_->declare_parameter<std::string>("fsm/impact_session", "");
+    if (impact_mode_ && impact_session_.empty())
+      throw std::invalid_argument("IMPACT requires a per-run session ID");
     
     current_wp_ = 0;
     exec_state_ = FSM_EXEC_STATE::INIT;
@@ -113,7 +117,25 @@ namespace ego_planner
     bspline_pub_ = node_->create_publisher<traj_utils::msg::Bspline>("planning/bspline", 10);
     data_disp_pub_ = node_->create_publisher<traj_utils::msg::DataDisp>("planning/data_display", 100);
 
-    if (target_type_ == TARGET_TYPE::MANUAL_TARGET)
+    if (impact_mode_)
+    {
+      impact_candidate_pub_ = node_->create_publisher<xq_sim_interfaces::msg::PlannerCandidate>("/impact/planner_candidate", 10);
+      impact_goal_sub_ = node_->create_subscription<xq_sim_interfaces::msg::PlannerGoal>(
+        "/impact/planner_goal", 10,
+        [this](const xq_sim_interfaces::msg::PlannerGoal::SharedPtr msg) {
+          const double age = (node_->now() - rclcpp::Time(msg->header.stamp, node_->get_clock()->get_clock_type())).seconds();
+          if (!have_odom_ || msg->session_id != impact_session_ || msg->request_id <= impact_request_
+              || msg->header.frame_id != "xq_lio_map" || age < -0.01 || age > 0.5
+              || !std::isfinite(msg->goal.x) || !std::isfinite(msg->goal.y)
+              || !std::isfinite(msg->goal.z) || msg->goal.z < 0.35
+              || !std::isfinite(msg->speed_scale) || msg->speed_scale < 0.1 || msg->speed_scale > 1.0) return;
+          impact_request_ = msg->request_id;
+          impact_speed_scale_ = msg->speed_scale;
+          init_pt_ = odom_pos_;
+          planNextWaypoint(Eigen::Vector3d(msg->goal.x, msg->goal.y, msg->goal.z));
+        });
+    }
+    else if (target_type_ == TARGET_TYPE::MANUAL_TARGET)
     {
       std::string target_topic;
       node_->get_parameter("fsm/target_topic", target_topic);
@@ -206,6 +228,11 @@ namespace ego_planner
       end_vel_.setZero();
       have_target_ = true;
       have_new_target_ = true;
+      if (impact_mode_)
+      {
+        changeFSMExecState(GEN_NEW_TRAJ, "IMPACT_GOAL");
+        return;
+      }
 
       /*** FSM状态转换 ***/
       if (exec_state_ == WAIT_TARGET)
@@ -664,6 +691,8 @@ namespace ego_planner
 
   bool EGOReplanFSM::planFromCurrentTraj(const int trial_times /*=1*/)
   {
+    // Uncertified trajectories may never have executed. Replan from measured state.
+    if (impact_mode_) return planFromGlobalTraj(trial_times);
 
     LocalTrajData *info = &planner_manager_->local_data_;
     // ros::Time time_now = ros::Time::now();
@@ -823,7 +852,7 @@ namespace ego_planner
       }
 
       /* 1. publish traj to traj_server */
-      bspline_pub_->publish(bspline);
+      publishTrajectory(bspline);
 
       /* 2. publish traj to the next drone of swarm */
 
@@ -917,9 +946,24 @@ namespace ego_planner
       bspline.knots.push_back(knots(i));
     }
 
-    bspline_pub_->publish(bspline);
+    publishTrajectory(bspline);
 
     return true;
+  }
+
+  void EGOReplanFSM::publishTrajectory(const traj_utils::msg::Bspline &trajectory)
+  {
+    if (!impact_mode_) { bspline_pub_->publish(trajectory); return; }
+    xq_sim_interfaces::msg::PlannerCandidate result;
+    result.header.stamp = node_->now();
+    result.header.frame_id = "xq_lio_map";
+    result.session_id = impact_session_;
+    result.request_id = impact_request_;
+    result.trajectory = trajectory;
+    // Time dilation changes dynamics, so the receiver certifies this final spline.
+    if (impact_speed_scale_ < 1.0)
+      for (auto &knot : result.trajectory.knots) knot /= impact_speed_scale_;
+    impact_candidate_pub_->publish(result);
   }
 
   void EGOReplanFSM::getLocalTarget()

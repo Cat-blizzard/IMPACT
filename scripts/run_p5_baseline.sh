@@ -3,6 +3,10 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 workspace_root="$(cd -- "${script_dir}/.." && pwd -P)"
+install_root="${IMPACT_INSTALL:-${workspace_root}/xq_install}"
+build_manifest="${IMPACT_BUILD_MANIFEST:-${install_root}/.xq_build_manifest.json}"
+ap_root="${ARDUPILOT_ROOT:-${HOME}/ardupilot}"
+plugin_root="${ARDUPILOT_GAZEBO_ROOT:-${HOME}/ardupilot_gazebo}"
 requested_run_dir=""
 phase6=false
 phase8=false
@@ -22,13 +26,13 @@ done
 [[ "${phase6}" == false || "${phase8}" == false ]] || { echo "Choose only one phase extension." >&2; exit 2; }
 
 for required in \
-  "${workspace_root}/xq_install/setup.bash" \
-  "${workspace_root}/xq_install/.xq_build_manifest.json" \
+  "${install_root}/setup.bash" \
+  "${build_manifest}" \
   "${workspace_root}/scripts/audit_external_assets.sh" \
-  "${workspace_root}/xq_install/ego_planner/lib/ego_planner/ego_planner_node" \
-  "${workspace_root}/xq_install/xq_autonomy/share/xq_autonomy/config/xq_p4_extnav.parm" \
-  /home/accelerate/ardupilot/build/sitl/bin/arducopter \
-  /home/accelerate/ardupilot_gazebo/build/libArduPilotPlugin.so; do
+  "${install_root}/ego_planner/lib/ego_planner/ego_planner_node" \
+  "${install_root}/xq_autonomy/share/xq_autonomy/config/xq_p4_extnav.parm" \
+  "${ap_root}/build/sitl/bin/arducopter" \
+  "${plugin_root}/build/libArduPilotPlugin.so"; do
   [[ -e "${required}" ]] || { echo "Missing dependency: ${required}" >&2; exit 2; }
 done
 if ss -H -ltnp | grep -Eq '(:|\])5760[[:space:]]'; then
@@ -61,7 +65,7 @@ unset GZ_SIM_RESOURCE_PATH IGN_GAZEBO_RESOURCE_PATH SDF_PATH
 unset RMW_IMPLEMENTATION FASTRTPS_DEFAULT_PROFILES_FILE CYCLONEDDS_URI
 set +u
 source /opt/ros/humble/setup.bash
-source "${workspace_root}/xq_install/setup.bash"
+source "${install_root}/setup.bash"
 set -u
 
 export ROS_DOMAIN_ID=$((182 + (10#$(date +%S) + $$) % 50))
@@ -69,18 +73,23 @@ export ROS_LOCALHOST_ONLY=1
 export ROS2CLI_NO_DAEMON=1
 export GZ_PARTITION="xq_p5_${USER:-wsl}_${timestamp}_$$"
 export ROS_LOG_DIR="${run_dir}/ros_logs"
+if [[ "${IMPACT_PROFILE:-local_cpu}" == local_cpu ]]; then
 export LIBGL_ALWAYS_SOFTWARE=1
 export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
 export GALLIUM_DRIVER=llvmpipe
 export EGL_PLATFORM=surfaceless
 export QT_QPA_PLATFORM=offscreen
-export GZ_SIM_RESOURCE_PATH="${workspace_root}/xq_install/xq_gz_assets/share/xq_gz_assets/models:/home/accelerate/ardupilot_gazebo/models:/home/accelerate/ardupilot_gazebo/worlds"
+else
+unset LIBGL_ALWAYS_SOFTWARE MESA_LOADER_DRIVER_OVERRIDE GALLIUM_DRIVER EGL_PLATFORM QT_QPA_PLATFORM
+export MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
+fi
+export GZ_SIM_RESOURCE_PATH="${install_root}/xq_gz_assets/share/xq_gz_assets/models:${plugin_root}/models:${plugin_root}/worlds"
 export IGN_GAZEBO_RESOURCE_PATH="${GZ_SIM_RESOURCE_PATH}"
 export SDF_PATH="${GZ_SIM_RESOURCE_PATH}"
-export GZ_SIM_SYSTEM_PLUGIN_PATH=/home/accelerate/ardupilot_gazebo/build
+export GZ_SIM_SYSTEM_PLUGIN_PATH="${plugin_root}/build"
 
-world="${workspace_root}/xq_install/xq_gz_assets/share/xq_gz_assets/worlds/xq_p5_structured_room.sdf"
-fcu_params="${workspace_root}/xq_install/xq_autonomy/share/xq_autonomy/config/xq_p4_extnav.parm"
+world="${install_root}/xq_gz_assets/share/xq_gz_assets/worlds/xq_p5_structured_room.sdf"
+fcu_params="${install_root}/xq_autonomy/share/xq_autonomy/config/xq_p4_extnav.parm"
 mission_result="${run_dir}/mission-result.json"
 evaluation_result="${run_dir}/evaluation-result.json"
 integrity_result="${run_dir}/integrity-result.json"
@@ -102,12 +111,12 @@ alert_limit_result="${run_dir}/alert-limit-result.json"
   echo "gazebo_record=${gazebo_record}"
 } >"${run_dir}/run.env"
 sha256sum "${world}" "${fcu_params}" \
-  "${workspace_root}/xq_install/ego_planner/lib/ego_planner/ego_planner_node" \
-  "${workspace_root}/xq_install/ego_planner/lib/ego_planner/traj_server" \
-  /home/accelerate/ardupilot/build/sitl/bin/arducopter \
-  /home/accelerate/ardupilot_gazebo/build/libArduPilotPlugin.so \
+  "${install_root}/ego_planner/lib/ego_planner/ego_planner_node" \
+  "${install_root}/ego_planner/lib/ego_planner/traj_server" \
+  "${ap_root}/build/sitl/bin/arducopter" \
+  "${plugin_root}/build/libArduPilotPlugin.so" \
   >"${run_dir}/runtime-dependencies.sha256"
-cp -- "${workspace_root}/xq_install/.xq_build_manifest.json" "${run_dir}/xq-build-manifest.json"
+cp -- "${build_manifest}" "${run_dir}/xq-build-manifest.json"
 
 before_audit="${run_dir}/external-assets.before.sha256"
 after_audit="${run_dir}/external-assets.after.sha256"
@@ -198,15 +207,16 @@ start_gazebo_gui() {
 
 pushd "${run_dir}/sitl_runtime" >/dev/null
 start_group sitl "${run_dir}/sitl.log" \
-  /home/accelerate/ardupilot/build/sitl/bin/arducopter \
+  "${ap_root}/build/sitl/bin/arducopter" \
   -S --model JSON --speedup 1 --slave 0 --wipe \
-  --defaults "/home/accelerate/ardupilot/Tools/autotest/default_params/copter.parm,/home/accelerate/ardupilot/Tools/autotest/default_params/gazebo-iris.parm,${fcu_params}" \
+  --defaults "${ap_root}/Tools/autotest/default_params/copter.parm,${ap_root}/Tools/autotest/default_params/gazebo-iris.parm,${fcu_params}" \
   --sim-address=127.0.0.1 -I0
 popd >/dev/null
 wait_log "${run_dir}/sitl.log" "SERIAL0 on TCP port 5760" 30 SITL
 start_group mavros "${run_dir}/mavros.log" ros2 launch mavros apm.launch fcu_url:=tcp://127.0.0.1:5760 namespace:=uav1/mavros
 wait_log "${run_dir}/sitl.log" "Loaded defaults" 45 defaults
-gazebo_command=(gz sim -r -s --headless-rendering -v 3)
+gazebo_command=(gz sim -r -s -v 3)
+[[ "${IMPACT_PROFILE:-local_cpu}" == local_cpu ]] && gazebo_command+=(--headless-rendering)
 if [[ "${gazebo_record}" == true ]]; then
   gazebo_command+=(--record-path "${run_dir}/gz_record" --record-period 0.05)
 fi

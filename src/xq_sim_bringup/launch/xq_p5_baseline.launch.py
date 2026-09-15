@@ -9,9 +9,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
-def generate_launch_description() -> LaunchDescription:
-    bridge = Path(get_package_share_directory("xq_gz_bridge"))
-    fast_lio = Path(get_package_share_directory("xq_fast_lio"))
+def baseline_ego_parameters():
     ego_parameters = {
         "use_sim_time": True,
         "fsm/flight_type": 1,
@@ -83,6 +81,13 @@ def generate_launch_description() -> LaunchDescription:
         "prediction/lambda": 1.0,
         "prediction/predict_rate": 1.0,
     }
+    return ego_parameters
+
+
+def generate_launch_description() -> LaunchDescription:
+    bridge = Path(get_package_share_directory("xq_gz_bridge"))
+    fast_lio = Path(get_package_share_directory("xq_fast_lio"))
+    ego_parameters = baseline_ego_parameters()
     return LaunchDescription(
         [
             DeclareLaunchArgument("evaluation_result_file"),

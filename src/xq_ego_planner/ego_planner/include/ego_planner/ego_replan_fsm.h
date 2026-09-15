@@ -17,6 +17,8 @@
 #include "traj_utils/msg/bspline.hpp"
 #include "traj_utils/msg/multi_bsplines.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "xq_sim_interfaces/msg/planner_goal.hpp"
+#include "xq_sim_interfaces/msg/planner_candidate.hpp"
 #include "traj_utils/msg/data_disp.hpp"
 #include "ego_planner/planner_manager.h"
 #include "traj_utils/planning_visualization.h"
@@ -63,6 +65,13 @@ namespace ego_planner
     double emergency_time_;
     bool flag_realworld_experiment_;
     bool enable_fail_safe_;
+    bool impact_mode_{false};
+    std::string impact_session_;
+    uint64_t impact_request_{0};
+    double impact_speed_scale_{1.0};
+    rclcpp::Subscription<xq_sim_interfaces::msg::PlannerGoal>::SharedPtr impact_goal_sub_;
+    rclcpp::Publisher<xq_sim_interfaces::msg::PlannerCandidate>::SharedPtr impact_candidate_pub_;
+    void publishTrajectory(const traj_utils::msg::Bspline &trajectory);
 
     /* planning data */
     bool have_trigger_, have_target_, have_odom_, have_new_target_, have_recv_pre_agent_;

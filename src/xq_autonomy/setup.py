@@ -24,6 +24,10 @@ setup(
     license="Apache-2.0",
     entry_points={
         "console_scripts": [
+            "impact_supervisor = xq_autonomy.sitl_supervisor_node:main",
+            "impact_arbiter = xq_autonomy.sitl_arbiter_node:main",
+            "impact_mission = xq_autonomy.sitl_mission_node:main",
+            "impact_evaluator = xq_autonomy.sitl_evaluator_node:main",
             "xq_stack_node = xq_autonomy.stack_node:main",
             "xq_metrics_node = xq_autonomy.metrics_node:main",
             "xq_fault_injector = xq_autonomy.fault_injector_node:main",

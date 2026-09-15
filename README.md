@@ -16,6 +16,10 @@ IMPACT 是一套面向 **GNSS 拒止、未知环境与动态场景** 的单机�
 
 ## 当前状态
 
+> **2026-09-16 本机/服务器开发交付：新增 P16 的 EGO 最终轨迹认证、MAVROS 仲裁、主动恢复和批处理入口。当前完成本机 CPU 构建与接口测试，完整 Gazebo/ArduPilot 闭环、120 次矩阵和视频仍待服务器验收。**
+>
+> 新入口及中文说明：[IMPACT_LOCAL_SERVER.md](docs/IMPACT_LOCAL_SERVER.md)。本轮聚焦静态定位退化与恢复；下方 P0—P15 结果属于原有阶段，不作为 P16 已通过的证据。
+
 > **2026-09-03：SIL 仿真 P0–P15 已通过；P15 完成 map-derived 研究比较，下一阶段仍为多场景统计实验与硬件部署。**
 
 当前仓库不是仅包含方案文档的空工程，已经建立从 Gazebo / ArduPilot SITL 到 FAST-LIO2、Frontier、EGO-Planner 和导航完整性估计的可重复仿真链路。

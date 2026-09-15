@@ -24,6 +24,7 @@ int traj_id_;
 // yaw control
 double last_yaw_, last_yaw_dot_;
 double time_forward_;
+std::string command_frame_ = "world";
 
 void bsplineCallback(traj_utils::msg::Bspline::ConstPtr msg)
 {
@@ -207,7 +208,7 @@ void cmdCallback()
   time_last = time_now;
 
   cmd.header.stamp = time_now;
-  cmd.header.frame_id = "world";
+  cmd.header.frame_id = command_frame_;
   cmd.trajectory_flag = quadrotor_msgs::msg::PositionCommand::TRAJECTORY_STATUS_READY;
   cmd.trajectory_id = traj_id_;
 
@@ -260,6 +261,7 @@ int main(int argc, char **argv)
   cmd.kv[2] = vel_gain[2];
 
   node->declare_parameter("traj_server/time_forward", -1.0);
+  command_frame_ = node->declare_parameter<std::string>("traj_server/command_frame", "world");
   node->get_parameter("traj_server/time_forward", time_forward_);
 
   last_yaw_ = 0.0;

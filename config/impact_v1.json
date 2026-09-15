@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "validation": "SIMULATED",
+  "scenarios": ["normal", "recoverable", "unrecoverable"],
+  "strategies": ["baseline", "conservative", "hard_gate", "recovery"],
+  "test_seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+  "development_seeds": [1000, 1001, 1002, 1003, 1004],
+  "goal_lio_m": [12.0, 0.0, 2.0],
+  "task_timeout_sim_s": 180.0,
+  "run_timeout_wall_s": 900.0,
+  "default_jobs": 1,
+  "sensor_noise_std_m": 0.015,
+  "calibration": "evidence/P7/p7-calibration.json",
+  "environment": {"ubuntu": "22.04", "ros": "humble", "gazebo": "harmonic"},
+  "notes": "Scenario names describe hypotheses, not established algorithm outcomes. Formal performance requires server validation."
+}

@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "target": {"ubuntu": "22.04", "ros": "humble", "gazebo": "Harmonic (gz-sim8, gz-msgs10, gz-transport13)"},
+  "ardupilot": {"url": "https://github.com/ArduPilot/ardupilot.git", "ref": "Copter-4.5.7", "status": "matches original repository P5 report; new server run pending"},
+  "ardupilot_gazebo": {"url": "https://github.com/ArduPilot/ardupilot_gazebo.git", "ref": "082a0fe231f6e63bc8d1598f1cba461d9e2ea7f5", "status": "main revision resolved 2026-09-16; compatibility requires server validation"},
+  "ego": {"vendored_upstream_commit": "23a8d5a191711dd65633df689b0b37ac07718416", "local_modifications": "included in source hash"},
+  "local_message_fallback": {
+    "mavros_msgs": {"url": "https://github.com/mavlink/mavros.git", "ref": "7f7e8fdda872a13755ea3f5814b7a42ac2660eef"},
+    "geographic_msgs": {"url": "https://github.com/ros-geographic-info/geographic_info.git", "ref": "f70b81a438172cd7a066dc1b18314d70e0eb6389"},
+    "note": "Used only for local message/DDS tests after ROS apt access failed. Full server uses installed Humble MAVROS; capture actual dpkg versions."
+  }
+}

@@ -6,8 +6,12 @@ find_package(builtin_interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(traj_utils REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/PlannerGoal.msg"
+  "msg/PlannerCandidate.msg"
+  "msg/TrajectoryAuthorization.msg"
   "msg/AgentState.msg"
   "msg/FaultEvent.msg"
   "msg/FrontierBid.msg"
@@ -24,7 +28,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/IntegrityExplorationDecision.msg"
   "msg/ReplanEvent.msg"
   "msg/SubmapMeta.msg"
-  DEPENDENCIES builtin_interfaces geometry_msgs std_msgs
+  DEPENDENCIES builtin_interfaces geometry_msgs std_msgs traj_utils
 )
 
 ament_export_dependencies(rosidl_default_runtime)

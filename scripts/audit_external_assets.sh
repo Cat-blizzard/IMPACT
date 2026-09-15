@@ -6,10 +6,10 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 workspace_root="$(cd -- "${script_dir}/.." && pwd -P)"
 
 readonly external_asset_dirs=(
-  "/home/accelerate/cuadc_ws/src/uav_slam_sim/worlds"
-  "/home/accelerate/cuadc_ws/src/uav_slam_sim/models"
-  "/home/accelerate/ardupilot_gazebo/worlds"
-  "/home/accelerate/ardupilot_gazebo/models"
+  "${CUADC_ROOT:-${HOME}/cuadc_ws}/src/uav_slam_sim/worlds"
+  "${CUADC_ROOT:-${HOME}/cuadc_ws}/src/uav_slam_sim/models"
+  "${ARDUPILOT_GAZEBO_ROOT:-${HOME}/ardupilot_gazebo}/worlds"
+  "${ARDUPILOT_GAZEBO_ROOT:-${HOME}/ardupilot_gazebo}/models"
 )
 
 usage() {
