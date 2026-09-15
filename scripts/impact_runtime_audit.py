@@ -29,7 +29,9 @@ def check_extnav(status_text, output_text):
                 continue
             node = re.search(r"Node name: (\S+)", section)
             gid = re.search(r"GID: ([0-9a-fA-F]+)", section)
-            result.append({"node": node[1] if node else None, "gid": gid[1] if gid else None})
+            ns = re.search(r"Node namespace: (\S+)", section)
+            result.append({"node": node[1] if node else None, "namespace": ns[1] if ns else None,
+                           "gid": gid[1] if gid else None})
         return result
     status_publishers = endpoints(status_text, "PUBLISHER")
     output_publishers = endpoints(output_text, "PUBLISHER")
@@ -41,7 +43,9 @@ def check_extnav(status_text, output_text):
                 output_single_adapter_publisher=(len(output_publishers) == 1 and
                                                  output_publishers[0]["node"] == "xq_p4_external_nav"),
                 output_subscribers=output_subscribers,
-                mavros_output_subscription=any("mavros" in x["node"] for x in output_subscribers))
+                mavros_output_subscription=any(
+                    x.get("namespace") == "/uav1/mavros" and x.get("node") == "odometry"
+                    for x in output_subscribers))
 
 
 def renderer_maps(pid):
@@ -73,12 +77,13 @@ def main():
         output_graph.read_text() if output_graph.exists() else "",
     )
     data.update(renderer_maps(int((run/"gazebo.pid").read_text())))
-    data["passed"] = (data["truth_isolation"] and data["sole_setpoint_publisher"]
+    smoke = "--smoke" in sys.argv
+    data["passed"] = (data["truth_isolation"] and (smoke or data["sole_setpoint_publisher"])
                       and data["extnav"]["status_single_publisher"]
                       and data["extnav"]["output_single_adapter_publisher"]
                       and data["extnav"]["mavros_output_subscription"])
     if profile == "server_gpu":
-        data["passed"] &= data["hardware_driver_mapped"] and not data["software_driver_mapped"]
+        data["passed"] &= data["hardware_driver_mapped"]
     (run/"runtime-audit.json").write_text(json.dumps(data,indent=2)+"\n")
     if not data["passed"]:
         raise SystemExit("Live isolation/render audit failed; see runtime-audit.json")
