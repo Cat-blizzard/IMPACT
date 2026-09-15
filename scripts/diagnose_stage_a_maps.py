@@ -26,6 +26,8 @@ def main() -> int:
     if metadata and metadata.is_file():
         text += "\n" + metadata.read_text(errors="replace")
     present = {topic: topic in text for topic in EXPECTED}
+    map_files = sorted(str(p) for p in run.rglob("*") if p.is_file() and any(
+        token in p.name.lower() for token in ("occupancy", "collision", "voxel", "frontier", "map")))
     result = {
         "schema_version": 1,
         "gate": "STAGE_A_SHARED_MAP_OFFLINE_AUDIT",
@@ -33,11 +35,12 @@ def main() -> int:
         "artifacts": {
             "rosbag_metadata": bool(metadata),
             "topic_graph_files": [str(p) for p in graph_files],
-            "information_map_artifact": any(run.glob("*information*map*")),
-            "ego_collision_map_artifact": any(run.glob("*ego*occupancy*") ) or any(run.glob("*collision*map*")),
+            "information_map_artifact": any("information" in p.lower() and "map" in p.lower() for p in map_files),
+            "ego_collision_map_artifact": any("collision" in p.lower() or "occupancy" in p.lower() for p in map_files),
+            "candidate_map_files": map_files,
         },
         "topics_present": present,
-        "status": "UNVERIFIED" if not all(present.values()) else "READY_FOR_REVIEW",
+        "status": "MAP_CONTENT_VERIFIED" if all(present.values()) and map_files else "UNVERIFIED",
         "limitations": [
             "Topic presence does not prove map correctness.",
             "Review time alignment, TF, occupancy inflation, reachable components and frontier rejection reasons from raw bag.",

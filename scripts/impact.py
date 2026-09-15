@@ -399,21 +399,43 @@ def stage_a(args):
     root = Path(args.results).resolve()
     root.mkdir(parents=True, exist_ok=True)
     run, report = experiment(args)
+    map_audit_path = run / "stage-a-map-audit.json"
+    subprocess.run([sys.executable, str(ROOT / "scripts/diagnose_stage_a_maps.py"), str(run),
+                    "--output", str(map_audit_path)], check=True)
     mission = report.get("mission", {})
     evaluation = report.get("evaluation", {})
+    events = []
+    event_file = run / "events.jsonl"
+    if event_file.is_file():
+        for line in event_file.read_text().splitlines():
+            if line.strip():
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+    map_audit = run / "stage-a-map-audit.json"
+    map_report = read_json(map_audit) if map_audit.is_file() else {}
     checks = {
         "protocol_is_stage_a": True,
         "not_legacy_p5_gate": mission.get("gate") != "P5_BASELINE_MAP_FRONTIER_EGO",
         "mission_record_present": bool(mission),
-        "evaluation_record_present": bool(evaluation),
+        "evaluation_pass": evaluation.get("status") == "PASS",
+        "evaluation_samples": int(evaluation.get("samples", 0)) >= 50,
+        "evaluation_collision_free": int(evaluation.get("collision_events", 0)) == 0,
         "termination_record_present": "termination_confirmed" in mission,
-        "authorization_events_recorded": any(
-            event.get("event") in {"AUTHORIZATION", "CERTIFY", "REVOKE", "BRAKE"}
-            for event in (json.loads(line) for line in (run / "events.jsonl").read_text().splitlines() if line.strip())
-        ) if (run / "events.jsonl").is_file() else False,
+        "termination_confirmed": bool(mission.get("termination_confirmed")),
+        "rosbag_metadata_present": (run / "rosbag" / "metadata.yaml").is_file(),
+        "dataflash_present": any((run / "sitl_runtime" / "logs").glob("*.BIN")),
+        "certification_events_recorded": any(event.get("event") == "CERTIFY" for event in events),
+        "authorization_linkage_recorded": any(
+            event.get("event") == "CERTIFY" and "trajectory_id" in event and "accepted" in event
+            for event in events
+        ),
+        "revocation_behavior_recorded": any(event.get("event") == "REVOKE" for event in events) or
+            any(event.get("event") == "CERTIFY" and event.get("accepted") is False for event in events),
+        "map_content_verified": map_report.get("status") == "MAP_CONTENT_VERIFIED",
         "completed_task": bool(report.get("completed_record")),
         "task_success": report.get("status") == "PASS" and bool(mission.get("task_success")),
-        "termination_confirmed": bool(mission.get("termination_confirmed")),
     }
     gate = {
         "schema_version": 1,
@@ -426,11 +448,25 @@ def stage_a(args):
         "strategy": args.strategy,
         "seed": args.seed,
         "checks": checks,
+        "map_audit": map_report,
+        "event_evidence": {
+            "count": len(events),
+            "certify": sum(event.get("event") == "CERTIFY" for event in events),
+            "revoke": sum(event.get("event") == "REVOKE" for event in events),
+            "clock_reset": sum(event.get("event") == "CLOCK_RESET" for event in events),
+        },
         "task_result": mission.get("task_result", {"status": report.get("status")} ),
         "termination": mission.get("termination", {"confirmed": mission.get("termination_confirmed")} ),
         "note": "Stage A target-navigation acceptance; never evidence for legacy P5 exploration or Stage B recovery benefit.",
     }
-    write_json(root / "stage-a-validation.json", gate)
+    write_json(run / "stage-a-validation.json", gate)
+    summary_path = root / "stage-a-summary.json"
+    summary = read_json(summary_path) if summary_path.is_file() else {
+        "schema_version": 1, "gate": "STAGE_A_GOAL_NAVIGATION_ACCEPTANCE", "runs": []
+    }
+    summary["runs"] = [item for item in summary["runs"] if item.get("run") != str(run)]
+    summary["runs"].append({"run": str(run), "status": gate["status"], "checks": checks})
+    write_json(summary_path, summary)
     print(json.dumps(gate, ensure_ascii=False, indent=2))
     return 0 if gate["status"] == "PASS" else 1
 

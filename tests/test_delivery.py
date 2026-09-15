@@ -102,3 +102,21 @@ def test_batch_resume_preserves_failed_outcome(tmp_path,monkeypatch):
     monkeypatch.setattr(impact,"experiment",run)
     impact.batch(argparse.Namespace(jobs=1,profile="server_gpu",results=str(tmp_path),validation=str(marker)))
     assert calls == [1]
+
+
+def test_stage_a_report_is_per_run_and_summary_accumulates(tmp_path, monkeypatch):
+    run = tmp_path / "normal-baseline-s1000"
+    run.mkdir()
+    impact.write_json(run / "run.json", dict(status="PASS", source_sha256="frozen", config_sha256="cfg",
+        completed_record=True, scenario="normal", strategy="baseline", seed=1000,
+        mission=dict(gate="STAGE_A", task_success=True, termination_confirmed=True),
+        evaluation=dict(status="PASS", samples=100, collision_events=0)))
+    (run / "rosbag").mkdir(); (run / "rosbag/metadata.yaml").write_text("topics:\n")
+    (run / "sitl_runtime/logs").mkdir(parents=True); (run / "sitl_runtime/logs/1.BIN").write_bytes(b"x")
+    (run / "events.jsonl").write_text('{"event":"CERTIFY","accepted":true,"trajectory_id":1}\n')
+    (run / "stage-a-map-audit.json").write_text('{"status":"UNVERIFIED"}\n')
+    monkeypatch.setattr(impact, "experiment", lambda args: (run, impact.read_json(run / "run.json")))
+    args = argparse.Namespace(results=str(tmp_path), scenario="normal", strategy="baseline", seed=1000)
+    assert impact.stage_a(args) == 1
+    assert (run / "stage-a-validation.json").exists()
+    assert len(impact.read_json(tmp_path / "stage-a-summary.json")["runs"]) == 1
