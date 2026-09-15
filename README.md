@@ -20,6 +20,8 @@ IMPACT 是一套面向 **GNSS 拒止、未知环境与动态场景** 的单机�
 >
 > 新入口及中文说明：[IMPACT_LOCAL_SERVER.md](docs/IMPACT_LOCAL_SERVER.md)。本轮聚焦静态定位退化与恢复；下方 P0—P15 结果属于原有阶段，不作为 P16 已通过的证据。
 
+最新交付约定：[Demo 与基线对照](docs/DEMO_AND_BASELINES.md) · [服务器交接单](docs/SERVER_HANDOFF.md)。主视频为左基线、右完整 IMPACT 的双栏；当前渲染代码仍为三栏，双栏适配待做。正式实验保持四策略、三场景、十个配对种子。
+
 > **2026-09-03：SIL 仿真 P0–P15 已通过；P15 完成 map-derived 研究比较，下一阶段仍为多场景统计实验与硬件部署。**
 
 当前仓库不是仅包含方案文档的空工程，已经建立从 Gazebo / ArduPilot SITL 到 FAST-LIO2、Frontier、EGO-Planner 和导航完整性估计的可重复仿真链路。

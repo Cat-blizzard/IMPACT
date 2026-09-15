@@ -2,6 +2,8 @@
 
 更新：2026-09-16。新增闭环称为 P16，原 P1—P15 入口和 evidence 保留。
 
+最新展示约定见 [Demo 与基线补充方案](DEMO_AND_BASELINES.md)，可直接交给服务器执行方的说明见 [服务器交接单](SERVER_HANDOFF.md)。主视频改为左基线、右完整 IMPACT 的双栏；正式四策略、120 次矩阵保持不变。现有渲染器仍为三栏，双栏展示适配尚待完成。
+
 ## 1. 当前交付状态
 
 已实现统一入口、EGO 候选轨迹关联、最终轨迹认证、唯一 MAVROS 位置出口、制动目标、恢复临时目标管理、独立真值评估、场景生成、配对种子批处理、诊断包和三栏回放渲染器。
@@ -166,7 +168,7 @@ bash scripts/impact.sh bundle experiments/results/dev/<某次运行目录>
 
 失败自动生成 `*-diagnostics.tar.gz`；超过 20 MB 的单个文件和 rosbag/video 不塞进小包，`artifact-inventory.json` 记录完整文件大小与哈希。先回传诊断包，必要时再传完整 rosbag。磁盘使用会随点云记录增长，先以试跑的实际大小估计 120 次任务存储预算。
 
-## 8. 回放与三栏视频
+## 8. 回放与视频
 
 ```bash
 bash scripts/impact.sh replay <运行目录> --kind gazebo
@@ -175,7 +177,9 @@ bash scripts/impact.sh replay <运行目录> --kind rosbag
 
 回放采用 ROS domain 168、独立 Gazebo partition，不启动飞控。ROS 回放在另一终端可用相同 domain 打开 RViz；播放原始 bag 中的 /clock，不再生成第二个时钟。Gazebo 回放支持情况在服务器验证后确认。
 
-三栏录制选同场景、同种子、相同源码和校准的三种策略，例如 baseline / hard_gate / recovery：
+主视频采用左 baseline、右 recovery 的双栏，布局、同步、字幕、结果卡和公平比较要求见 [补充方案](DEMO_AND_BASELINES.md)。当前代码尚未支持双栏，不能直接把两个目录传给 render。
+
+现有三栏渲染入口作为补充，选同场景、同种子、相同源码和校准的三种策略，例如 baseline / hard_gate / recovery：
 
 ```bash
 bash scripts/impact.sh render <baseline目录> <hard_gate目录> <recovery目录> --output recovery-comparison.mp4
@@ -204,6 +208,6 @@ bash scripts/impact.sh render <baseline目录> <hard_gate目录> <recovery目录
 - 制动距离/跟踪误差预算实测；传感器失效、恢复目标和迟到轨迹在完整闭环中的行为。
 - recoverable 场景是否有真实恢复收益；unrecoverable 是否合理停止。
 - 120 次独立任务、失败结果保留、统计表/图与完整录制。
-- 三栏渲染及约三分钟演示最终剪辑。
+- 现有三栏渲染验证；双栏主视频适配及约三分钟演示最终剪辑。
 
 双 GPU 并行和完整端到端时延测量尚未实现服务器验收，不作为此次本机交付已完成项。预核查静态场景的仿真降落不构成任意环境安全着陆保证。
