@@ -508,6 +508,7 @@ def test_evaluation_truth_topic_is_absent_from_autonomy_stack_source() -> None:
         "metrics_node.py",
         "fault_injector_node.py",
         "network_relay_node.py",
+        "p3_evaluator_node.py",
     ],
 )
 def test_ros_entry_points_guard_external_shutdown(filename: str) -> None:

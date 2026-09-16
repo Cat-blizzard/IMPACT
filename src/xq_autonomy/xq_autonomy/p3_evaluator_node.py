@@ -297,6 +297,12 @@ def main(args=None) -> None:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except Exception:
+        # Humble can surface the private RCLError type when launch invalidates
+        # the context while an executor wait-set is being rebuilt.  Suppress
+        # only that shutdown race; genuine runtime errors must still fail.
+        if rclpy.ok():
+            raise
     finally:
         node._write()
         node.destroy_node()
