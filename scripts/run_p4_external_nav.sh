@@ -60,6 +60,7 @@ case "${run_dir}" in
   "${workspace_root}"/experiments/results/external_nav/*) ;;
   *) echo "Run directory must stay below experiments/results/external_nav." >&2; exit 2 ;;
 esac
+[[ ! -e "${run_dir}" ]] || { echo "Refusing to reuse run directory: ${run_dir}" >&2; exit 2; }
 mkdir -p -- "${run_dir}/ros_logs" "${run_dir}/sitl_runtime"
 
 unset AMENT_PREFIX_PATH CMAKE_PREFIX_PATH COLCON_PREFIX_PATH PYTHONPATH LD_LIBRARY_PATH
@@ -69,6 +70,10 @@ set +u
 source /opt/ros/humble/setup.bash
 source "${install_root}/setup.bash"
 set -u
+
+# Refuse stale/wrong installations before starting SITL, Gazebo or any task.
+python3 "${script_dir}/verify_runtime_build.py" --install "${install_root}" \
+  --manifest "${build_manifest}" --output "${run_dir}/runtime-build-verification.json"
 
 export ROS_DOMAIN_ID=$((102 + (10#$(date +%S) + $$) % 80))
 export ROS_LOCALHOST_ONLY=1

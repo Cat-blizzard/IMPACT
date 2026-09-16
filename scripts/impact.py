@@ -121,6 +121,8 @@ def build(cpu_only=False):
     frozen_source = source_hash()
     # An interrupted/failed build must not leave a usable old approval manifest.
     (owned / "build-manifest.json").unlink(missing_ok=True)
+    from verify_runtime_build import MARKER, inventory, check_installed_python
+    (owned / "install" / MARKER).unlink(missing_ok=True)
     source = owned / "source"
     # Owned staging copy: build only the current source tree, including uncommitted edits.
     if source.exists():
@@ -139,6 +141,14 @@ def build(cpu_only=False):
                     platform=platform.platform(), git=capture(["git","-C",str(ROOT),"rev-parse","HEAD"]),
                     created_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()))
     manifest["packages"] = capture(["dpkg-query","-W","ros-humble-*","libgz-*","gz-*"])
+    install = (owned / "install").resolve()
+    manifest.update(schema_version=2, install_root=str(install),
+                    installed_files=inventory(install),
+                    installed_packages=sorted(p.name for p in install.iterdir()
+                        if (p / "share/ament_index/resource_index/packages" / p.name).is_file()))
+    if not cpu_only:
+        manifest["installed_python_checked"] = check_installed_python(ROOT, install)
+    write_json(install / MARKER, manifest)
     write_json(owned / "build-manifest.json", manifest)
     print(f"Build passed: {owned}; runtime flight validation still pending")
 
@@ -175,7 +185,8 @@ def runtime_env(profile, run):
                 "QT_QPA_PLATFORM", "AMENT_PREFIX_PATH", "CMAKE_PREFIX_PATH", "COLCON_PREFIX_PATH", "PYTHONPATH",
                 "LD_LIBRARY_PATH", "RMW_IMPLEMENTATION", "FASTRTPS_DEFAULT_PROFILES_FILE", "CYCLONEDDS_URI"):
         env.pop(key, None)
-    env.update(IMPACT_INSTALL=str(build_root()/"install"), IMPACT_RUN=str(run),
+    env.update(IMPACT_INSTALL=str(build_root()/"install"),
+        IMPACT_BUILD_MANIFEST=str(build_root()/"build-manifest.json"), IMPACT_RUN=str(run),
         ROS_DOMAIN_ID="170", ROS_LOCALHOST_ONLY="1", ROS2CLI_NO_DAEMON="1",
         GZ_PARTITION="impact_"+run.name, ROS_LOG_DIR=str(run/"ros_logs"))
     if profile == "local_cpu":
@@ -243,8 +254,25 @@ def experiment(args):
                     process.wait()
                 raise RuntimeError("launcher interrupted or wall watchdog expired")
         if getattr(args, "smoke", False):
-            report.update(smoke=read_json(run/"smoke.json"), launcher_exit_code=code,
-                          status="PASS" if code == 0 else "ERROR", completed_record=code == 0)
+            smoke = read_json(run/"smoke.json")
+            cleanup = []
+            cleanup_file = run / "cleanup-processes.jsonl"
+            if cleanup_file.is_file():
+                cleanup = [json.loads(line) for line in cleanup_file.read_text().splitlines() if line.strip()]
+            labels = {item.get("label") for item in cleanup}
+            required = {"sitl", "mavros", "gazebo", "rosbag", "stack"}
+            expected_statuses = {0, 130, 143}
+            cleanup_passed = (required <= labels
+                              and all(not item.get("residual", True) for item in cleanup)
+                              and all(item.get("initial_alive") or item.get("label") == "rosbag" for item in cleanup)
+                              and all(item.get("wait_status") in expected_statuses
+                                      or (item.get("label") == "rosbag" and item.get("wait_status") == 127)
+                                      for item in cleanup))
+            smoke.update(cleanup_processes=cleanup, cleanup_passed=cleanup_passed)
+            write_json(run/"smoke.json", smoke)
+            passed = code == 0 and smoke.get("passed") is True and cleanup_passed
+            report.update(smoke=smoke, launcher_exit_code=code,
+                          status="PASS" if passed else "ERROR", completed_record=passed)
             return run, report
         mission = read_json(run/"mission.json")
         evaluation = read_json(run/"evaluation.json")

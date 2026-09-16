@@ -8,11 +8,15 @@ set +u
 source /opt/ros/humble/setup.bash
 source "$IMPACT_INSTALL/setup.bash"
 set -u
+python3 "$root/scripts/verify_runtime_build.py" --install "$IMPACT_INSTALL" \
+  --manifest "${IMPACT_BUILD_MANIFEST:-$IMPACT_INSTALL/../build-manifest.json}" \
+  --output "$run/runtime-build-verification.json"
 export GZ_SIM_RESOURCE_PATH="$IMPACT_INSTALL/xq_gz_assets/share/xq_gz_assets/models:$ARDUPILOT_GAZEBO_ROOT/models:$ARDUPILOT_GAZEBO_ROOT/worlds"
 export GZ_SIM_SYSTEM_PLUGIN_PATH="$ARDUPILOT_GAZEBO_ROOT/build"
 export SDF_PATH="$GZ_SIM_RESOURCE_PATH"
 mkdir -p -- "$run/ros_logs" "$run/sitl_runtime"
 pids=()
+labels=()
 phase="init"
 failure_trap() {
   rc=$?
@@ -22,16 +26,27 @@ failure_trap() {
 trap 'failure_trap "$LINENO" "$BASH_COMMAND"' ERR
 cleanup() {
   status=$?
+  set +e
   date -Is >"$run/cleanup-started-at.txt"
   printf 'exit_code=%s phase=%s\n' "$status" "$phase" >>"$run/cleanup-started-at.txt"
   for pid in "${pids[@]}"; do printf 'pid=%s alive=%s\n' "$pid" "$(kill -0 "$pid" 2>/dev/null && echo true || echo false)" >>"$run/cleanup-started-at.txt"; done
   trap - EXIT INT TERM
-  for pid in "${pids[@]}"; do
+  : >"$run/cleanup-processes.jsonl"
+  cleanup_initial=()
+  cleanup_signals=()
+  for index in "${!pids[@]}"; do
+    pid="${pids[index]}"
+    initial_alive=false
+    kill -0 "$pid" 2>/dev/null && initial_alive=true
+    signal=INT
     if [[ -f "$run/gazebo.pid" && "$pid" == "$(cat "$run/gazebo.pid")" ]]; then
-      kill -TERM -- "-$pid" 2>/dev/null || true
-    else
-      kill -INT -- "-$pid" 2>/dev/null || true
+      signal=TERM
+    elif [[ "${labels[index]}" == sitl ]]; then
+      signal=TERM
     fi
+    cleanup_initial+=("$initial_alive")
+    cleanup_signals+=("$signal")
+    kill -"$signal" -- "-$pid" 2>/dev/null || true
   done
   for _ in {1..10}; do
     alive=false
@@ -41,7 +56,23 @@ cleanup() {
   done
   for pid in "${pids[@]}"; do kill -TERM -- "-$pid" 2>/dev/null || true; done
   sleep 2
-  for pid in "${pids[@]}"; do kill -KILL -- "-$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; done
+  for index in "${!pids[@]}"; do
+    pid="${pids[index]}"
+    kill -KILL -- "-$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null
+    wait_status=$?
+    residual=false
+    kill -0 "$pid" 2>/dev/null && residual=true
+    python3 - "${labels[index]}" "$pid" "${cleanup_initial[index]}" \
+      "${cleanup_signals[index]}" "$wait_status" "$residual" >>"$run/cleanup-processes.jsonl" <<'PY'
+import json,sys
+label,pid,initial,signal,status,residual=sys.argv[1:]
+print(json.dumps({'label':label,'pid':int(pid),'initial_alive':initial=='true',
+ 'signal':signal,'wait_status':int(status),'residual':residual=='true'},separators=(',',':')))
+PY
+  done
+  find "$run/sitl_runtime/logs" -maxdepth 1 -type f -name '*.BIN' -print0 2>/dev/null \
+    | sort -z | xargs -0 -r sha256sum >"$run/dataflash.sha256"
   exit "$status"
 }
 trap cleanup EXIT
@@ -52,6 +83,7 @@ start() {
   setsid "$@" >"$run/$label.log" 2>&1 < /dev/null &
   pid=$!
   pids+=("$pid")
+  labels+=("$label")
   echo "$pid" >"$run/$label.pid"
 }
 wait_log() {
@@ -101,6 +133,8 @@ start rosbag ros2 bag record -o "$run/rosbag" \
  /impact/planner_goal /impact/planner_candidate /impact/certified_bspline \
  /impact/authorization /impact/position_cmd /impact/mission_stage /impact/status \
  /impact/arbiter_status /uav1/mavros/state /uav1/mavros/local_position/odom \
+ /uav1/mavros/odometry/out /uav1/mavros/statustext/recv /uav1/mavros/estimator_status \
+ /uav1/mavros/imu/data \
  /uav1/mavros/setpoint_position/local /xq/eval/p5/ground_truth /xq/p4/extnav/status
 start stack ros2 launch xq_sim_bringup impact_sitl.launch.py run_dir:="$run"
 phase="wait_localization"
@@ -120,12 +154,15 @@ audit_args=("$run" "$profile")
 python3 "$root/scripts/impact_runtime_audit.py" "${audit_args[@]}"
 if [[ "${IMPACT_SMOKE_ONLY:-0}" == 1 ]]; then
   phase="smoke_observation"
-  python3 "$root/scripts/startup_smoke_monitor.py" --seconds 30 --output "$run/smoke-observation.json"
+  python3 "$root/scripts/startup_smoke_monitor.py" --seconds 45 --output "$run/smoke-observation.json"
   phase="smoke_bag_validation"
   rosbag_pid="$(cat "$run/rosbag.pid")"
   kill -INT -- "-$rosbag_pid" 2>/dev/null || true
-  wait "$rosbag_pid" 2>/dev/null || true
-  printf 'rosbag_pid=%s exit_recorded=true\n' "$rosbag_pid" >"$run/smoke-rosbag-stop.txt"
+  set +e
+  wait "$rosbag_pid" 2>/dev/null
+  rosbag_status=$?
+  set -e
+  printf 'rosbag_pid=%s wait_status=%s\n' "$rosbag_pid" "$rosbag_status" >"$run/smoke-rosbag-stop.txt"
   timeout 20 ros2 bag info "$run/rosbag" >"$run/smoke-bag-info.txt"
   python3 - "$run" <<'PY'
 import json, pathlib, sys

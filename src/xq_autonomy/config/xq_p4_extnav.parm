@@ -12,3 +12,5 @@ GPS_TYPE 0
 GPS_TYPE2 0
 SIM_GPS_DISABLE 1
 SIM_GPS2_DISABLE 1
+# Preserve pre-arm IMU and VisualOdom evidence. This changes logging only.
+LOG_DISARMED 1

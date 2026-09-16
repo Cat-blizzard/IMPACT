@@ -1,0 +1,1115 @@
+{
+  "runs": [
+    {
+      "run": "/home/ld666/projects/IMPACT/experiments/results/external_nav/p4_20260916T054248Z_157661",
+      "build_git": {
+        "code": 0,
+        "output": "4ffa7a6adf8199b11347d4d7c2465600cb24b4a8"
+      },
+      "source_sha256": "d0e2162b59c927bed1e6ec5e4696dfe6b8b9d45d514b5b47588a46ca15fcc5ee",
+      "mission_status": "PASS",
+      "arm_requests": [
+        {
+          "elapsed_s": 16.101,
+          "kind": "REQUEST",
+          "phase": "ARM",
+          "detail": "arm"
+        },
+        {
+          "elapsed_s": 18.201,
+          "kind": "REQUEST",
+          "phase": "ARM",
+          "detail": "arm"
+        }
+      ],
+      "fcu_timeline": [
+        {
+          "wall_s": 1789537374.1056921,
+          "ros_clock_s": null,
+          "message": "Calibrating barometer"
+        },
+        {
+          "wall_s": 1789537374.9870124,
+          "ros_clock_s": null,
+          "message": "ArduPilot"
+        },
+        {
+          "wall_s": 1789537375.7470517,
+          "ros_clock_s": null,
+          "message": "Barometer 1 calibration complete"
+        },
+        {
+          "wall_s": 1789537375.7474189,
+          "ros_clock_s": null,
+          "message": "Barometer 2 calibration complete"
+        },
+        {
+          "wall_s": 1789537375.7513473,
+          "ros_clock_s": null,
+          "message": "ArduPilot Ready"
+        },
+        {
+          "wall_s": 1789537375.751614,
+          "ros_clock_s": null,
+          "message": "AHRS: DCM active"
+        },
+        {
+          "wall_s": 1789537376.151975,
+          "ros_clock_s": null,
+          "message": "RC7: SaveWaypoint LOW"
+        },
+        {
+          "wall_s": 1789537376.1528523,
+          "ros_clock_s": null,
+          "message": "RC8: PrecisionLoiter MIDDLE"
+        },
+        {
+          "wall_s": 1789537378.409137,
+          "ros_clock_s": 3.721,
+          "message": "EKF3 IMU0 initialised"
+        },
+        {
+          "wall_s": 1789537378.4094834,
+          "ros_clock_s": 3.721,
+          "message": "EKF3 IMU1 initialised"
+        },
+        {
+          "wall_s": 1789537378.4131355,
+          "ros_clock_s": 3.721,
+          "message": "AHRS: EKF3 active"
+        },
+        {
+          "wall_s": 1789537380.4350717,
+          "ros_clock_s": 5.075,
+          "message": "EKF3 IMU0 tilt alignment complete"
+        },
+        {
+          "wall_s": 1789537380.4452028,
+          "ros_clock_s": 5.085,
+          "message": "EKF3 IMU1 tilt alignment complete"
+        },
+        {
+          "wall_s": 1789537380.5227406,
+          "ros_clock_s": 5.157,
+          "message": "EKF3 IMU1 yaw aligned"
+        },
+        {
+          "wall_s": 1789537380.5256805,
+          "ros_clock_s": 5.16,
+          "message": "EKF3 IMU0 yaw aligned"
+        },
+        {
+          "wall_s": 1789537380.526093,
+          "ros_clock_s": 5.161,
+          "message": "EKF3 IMU1 is using external nav data"
+        },
+        {
+          "wall_s": 1789537380.5263553,
+          "ros_clock_s": 5.161,
+          "message": "EKF3 IMU1 initial pos NED = -0.0,0.0,0.0 (m)"
+        },
+        {
+          "wall_s": 1789537380.5266073,
+          "ros_clock_s": 5.161,
+          "message": "EKF3 IMU1 initial vel NED = 0.0,-0.0,0.0 (m/s)"
+        },
+        {
+          "wall_s": 1789537380.527594,
+          "ros_clock_s": 5.162,
+          "message": "EKF3 IMU0 is using external nav data"
+        },
+        {
+          "wall_s": 1789537380.5278494,
+          "ros_clock_s": 5.163,
+          "message": "EKF3 IMU0 initial pos NED = -0.0,0.0,0.0 (m)"
+        },
+        {
+          "wall_s": 1789537380.5280986,
+          "ros_clock_s": 5.163,
+          "message": "EKF3 IMU0 initial vel NED = 0.0,-0.0,0.0 (m/s)"
+        },
+        {
+          "wall_s": 1789537385.013218,
+          "ros_clock_s": 8.272,
+          "message": "ArduCopter V4.5.7 (2a3dc4b7)"
+        },
+        {
+          "wall_s": 1789537385.0136585,
+          "ros_clock_s": 8.272,
+          "message": "81865880de7840619af7bc58e9a47b3e"
+        },
+        {
+          "wall_s": 1789537385.0140514,
+          "ros_clock_s": 8.273,
+          "message": "Frame: QUAD/X"
+        },
+        {
+          "wall_s": 1789537390.4606483,
+          "ros_clock_s": 11.924,
+          "message": "EKF3 IMU0 origin set"
+        },
+        {
+          "wall_s": 1789537390.4610202,
+          "ros_clock_s": 11.925,
+          "message": "EKF3 IMU1 origin set"
+        },
+        {
+          "wall_s": 1789537390.4908159,
+          "ros_clock_s": 11.954,
+          "message": "Field Elevation Set: 565m"
+        },
+        {
+          "wall_s": 1789537404.3810325,
+          "ros_clock_s": 21.8,
+          "message": "Arm: Gyros inconsistent"
+        },
+        {
+          "wall_s": 1789537406.5119545,
+          "ros_clock_s": 23.389,
+          "message": "Arming motors"
+        },
+        {
+          "wall_s": 1789537437.9945874,
+          "ros_clock_s": 46.005,
+          "message": "PrecLand: Failsafe Measures"
+        },
+        {
+          "wall_s": 1789537453.8893816,
+          "ros_clock_s": 57.46,
+          "message": "EKF3 lane switch 1"
+        },
+        {
+          "wall_s": 1789537453.8899574,
+          "ros_clock_s": 57.461,
+          "message": "EKF primary changed:1"
+        },
+        {
+          "wall_s": 1789537457.0731485,
+          "ros_clock_s": 59.703,
+          "message": "Disarming motors"
+        },
+        {
+          "wall_s": 1789537457.075333,
+          "ros_clock_s": 59.705,
+          "message": "EKF primary changed:0"
+        }
+      ],
+      "imu_instances": [
+        0,
+        1
+      ],
+      "imu_record_start_s": 22.828829,
+      "imu_record_end_s": 61.228626,
+      "gyro_pair_samples_before_successful_arm": 14,
+      "gyro_pair_max_deg_s_before_successful_arm": 0.025103143825792634,
+      "df_visp_count": 385,
+      "df_visp_first": [
+        {
+          "dataflash": {
+            "mavpackettype": "VISP",
+            "TimeUS": 22838826,
+            "RTimeUS": 1789537405783396,
+            "CTimeMS": 22815,
+            "PX": -0.0027178374584764242,
+            "PY": 0.0012633932055905461,
+            "PZ": 0.0020979796536266804,
+            "R": -0.001621708390302956,
+            "P": 0.008842513896524906,
+            "Y": 90.01683044433594,
+            "PErr": 0.20000000298023224,
+            "AErr": 0.20000000298023224,
+            "Rst": 0,
+            "Ign": 0,
+            "Q": 0
+          },
+          "matched_ros_stamp_error_s": 4.76837158203125e-07,
+          "ros_bag_receipt_s": 1789537405.7837782,
+          "ros_clock_at_publication_s": 22.84,
+          "publication_before_arm_warning_s": -1.4023635387420654
+        },
+        {
+          "dataflash": {
+            "mavpackettype": "VISP",
+            "TimeUS": 22928795,
+            "RTimeUS": 1789537405904252,
+            "CTimeMS": 22906,
+            "PX": -0.0027972408570349216,
+            "PY": 0.0009046635823324323,
+            "PZ": 0.002223128220066428,
+            "R": -0.0023933635093271732,
+            "P": 0.005252741277217865,
+            "Y": 90.0153579711914,
+            "PErr": 0.20000000298023224,
+            "AErr": 0.20000000298023224,
+            "Rst": 0,
+            "Ign": 0,
+            "Q": 0
+          },
+          "matched_ros_stamp_error_s": 4.76837158203125e-07,
+          "ros_bag_receipt_s": 1789537405.9046054,
+          "ros_clock_at_publication_s": 22.93,
+          "publication_before_arm_warning_s": -1.5232195854187012
+        },
+        {
+          "dataflash": {
+            "mavpackettype": "VISP",
+            "TimeUS": 23035758,
+            "RTimeUS": 1789537406051184,
+            "CTimeMS": 23013,
+            "PX": -0.0028751282952725887,
+            "PY": 0.0007925895042717457,
+            "PZ": 0.0021978195291012526,
+            "R": 0.0006816771347075701,
+            "P": 0.006310057360678911,
+            "Y": 90.01214599609375,
+            "PErr": 0.20000000298023224,
+            "AErr": 0.20000000298023224,
+            "Rst": 0,
+            "Ign": 0,
+            "Q": 0
+          },
+          "matched_ros_stamp_error_s": 7.152557373046875e-07,
+          "ros_bag_receipt_s": 1789537406.0515394,
+          "ros_clock_at_publication_s": 23.037,
+          "publication_before_arm_warning_s": -1.6701514720916748
+        },
+        {
+          "dataflash": {
+            "mavpackettype": "VISP",
+            "TimeUS": 23125727,
+            "RTimeUS": 1789537406175838,
+            "CTimeMS": 23104,
+            "PX": -0.0030260304920375347,
+            "PY": 0.0012336859945207834,
+            "PZ": 0.0021907093469053507,
+            "R": -0.0004406601656228304,
+            "P": 0.008856186643242836,
+            "Y": 90.01129150390625,
+            "PErr": 0.20000000298023224,
+            "AErr": 0.20000000298023224,
+            "Rst": 0,
+            "Ign": 0,
+            "Q": 0
+          },
+          "matched_ros_stamp_error_s": 9.5367431640625e-07,
+          "ros_bag_receipt_s": 1789537406.176199,
+          "ros_clock_at_publication_s": 23.129,
+          "publication_before_arm_warning_s": -1.7948055267333984
+        },
+        {
+          "dataflash": {
+            "mavpackettype": "VISP",
+            "TimeUS": 23228692,
+            "RTimeUS": 1789537406311591,
+            "CTimeMS": 23205,
+            "PX": -0.0027280692011117935,
+            "PY": 0.0016303035663440824,
+            "PZ": 0.0021596276201307774,
+            "R": -0.0028718982357531786,
+            "P": 0.008795223198831081,
+            "Y": 90.01219940185547,
+            "PErr": 0.20000000298023224,
+            "AErr": 0.20000000298023224,
+            "Rst": 0,
+            "Ign": 0,
+            "Q": 0
+          },
+          "matched_ros_stamp_error_s": 4.76837158203125e-07,
+          "ros_bag_receipt_s": 1789537406.311885,
+          "ros_clock_at_publication_s": 23.229,
+          "publication_before_arm_warning_s": -1.930558443069458
+        },
+        {
+          "dataflash": {
+            "mavpackettype": "VISP",
+            "TimeUS": 23325658,
+            "RTimeUS": 1789537406446065,
+            "CTimeMS": 23304,
+            "PX": -0.0026204704772681,
+            "PY": 0.0015552849508821964,
+            "PZ": 0.0022439181338995695,
+            "R": -0.002221372677013278,
+            "P": 0.008401904255151749,
+            "Y": 90.00888061523438,
+            "PErr": 0.20000000298023224,
+            "AErr": 0.20000000298023224,
+            "Rst": 0,
+            "Ign": 0,
+            "Q": 0
+          },
+          "matched_ros_stamp_error_s": 4.76837158203125e-07,
+          "ros_bag_receipt_s": 1789537406.4463606,
+          "ros_clock_at_publication_s": 23.328,
+          "publication_before_arm_warning_s": -2.065032482147217
+        },
+        {
+          "dataflash": {
+            "mavpackettype": "VISP",
+            "TimeUS": 23423625,
+            "RTimeUS": 1789537406586438,
+            "CTimeMS": 23402,
+            "PX": -0.0023303511552512646,
+            "PY": 0.0014626519987359643,
+            "PZ": 0.002197942463681102,
+            "R": -0.0009256440098397434,
+            "P": 0.008125544525682926,
+            "Y": 90.01297760009766,
+            "PErr": 0.20000000298023224,
+            "AErr": 0.20000000298023224,
+            "Rst": 0,
+            "Ign": 0,
+            "Q": 0
+          },
+          "matched_ros_stamp_error_s": 7.152557373046875e-07,
+          "ros_bag_receipt_s": 1789537406.586837,
+          "ros_clock_at_publication_s": 23.427,
+          "publication_before_arm_warning_s": -2.2054054737091064
+        },
+        {
+          "dataflash": {
+            "mavpackettype": "VISP",
+            "TimeUS": 23533587,
+            "RTimeUS": 1789537406733331,
+            "CTimeMS": 23512,
+            "PX": -0.0025791877415031195,
+            "PY": 0.0012575887376442552,
+            "PZ": 0.002078163903206587,
+            "R": -0.0014379280619323254,
+            "P": 0.0048729004338383675,
+            "Y": 90.01337432861328,
+            "PErr": 0.20000000298023224,
+            "AErr": 0.20000000298023224,
+            "Rst": 0,
+            "Ign": 0,
+            "Q": 0
+          },
+          "matched_ros_stamp_error_s": 2.384185791015625e-07,
+          "ros_bag_receipt_s": 1789537406.7336607,
+          "ros_clock_at_publication_s": 23.537,
+          "publication_before_arm_warning_s": -2.3522984981536865
+        }
+      ],
+      "bag_metrics": {
+        "/uav1/mavros/imu/data": {
+          "count": 980,
+          "wall_span_s": 68.40485525131226,
+          "wall_hz": 14.311849596103329,
+          "max_wall_gap_s": 0.18610000610351562
+        },
+        "/uav1/mavros/local_position/odom": {
+          "count": 980,
+          "wall_span_s": 68.4046401977539,
+          "wall_hz": 14.311894590334324,
+          "max_wall_gap_s": 0.1888425350189209
+        },
+        "/localization/odom": {
+          "count": 574,
+          "wall_span_s": 80.64896583557129,
+          "wall_hz": 7.104864818331878,
+          "max_wall_gap_s": 0.24506592750549316
+        },
+        "/clock": {
+          "count": 57721,
+          "wall_span_s": 81.33307147026062,
+          "wall_hz": 709.6744160351215,
+          "max_wall_gap_s": 0.1006765365600586
+        },
+        "/livox/imu": {
+          "count": 11544,
+          "wall_span_s": 81.32897806167603,
+          "wall_hz": 141.92973126068716,
+          "max_wall_gap_s": 0.10216856002807617
+        },
+        "/livox/lidar": {
+          "count": 577,
+          "wall_span_s": 81.2559552192688,
+          "wall_hz": 7.088711202097948,
+          "max_wall_gap_s": 0.2678816318511963
+        },
+        "/xq/eval/p4/ground_truth": {
+          "count": 3759,
+          "wall_span_s": 81.31838726997375,
+          "wall_hz": 46.21341035113734,
+          "max_wall_gap_s": 0.10313963890075684
+        },
+        "/uav1/mavros/odometry/out": {
+          "count": 574,
+          "wall_span_s": 80.64865612983704,
+          "wall_hz": 7.1048921023249525,
+          "max_wall_gap_s": 0.2446904182434082
+        },
+        "/xq/p4/extnav/status": {
+          "count": 407,
+          "wall_span_s": 81.19969391822815,
+          "wall_hz": 5.000018847470789,
+          "max_wall_gap_s": 0.20261406898498535
+        },
+        "/uav1/mavros/state": {
+          "count": 65,
+          "wall_span_s": 80.26221656799316,
+          "wall_hz": 0.797386400932289,
+          "max_wall_gap_s": 2.3132877349853516
+        },
+        "/uav1/mavros/statustext/recv": {
+          "count": 23,
+          "wall_span_s": 76.64030981063843,
+          "wall_hz": 0.28705520703605225,
+          "max_wall_gap_s": 31.482673168182373
+        }
+      },
+      "pre_first_arm_window": {
+        "/clock": {
+          "count": 7272,
+          "max_wall_gap_s": 0.0487973690032959
+        },
+        "/localization/odom": {
+          "count": 73,
+          "max_wall_gap_s": 0.15552568435668945,
+          "first_stamp": 14.5,
+          "last_stamp": 21.699999999,
+          "nonincreasing": 0,
+          "max_stamp_gap_s": 0.1000000010000015
+        },
+        "/uav1/mavros/odometry/out": {
+          "count": 73,
+          "max_wall_gap_s": 0.1557297706604004,
+          "first_stamp": 1789537394.384814,
+          "last_stamp": 1789537404.4075265,
+          "nonincreasing": 0,
+          "max_stamp_gap_s": 0.15557456016540527
+        },
+        "/xq/p4/extnav/status": {
+          "count": 51,
+          "max_wall_gap_s": 0.20056414604187012,
+          "healthy": 51,
+          "last": {
+            "schema_version": 2,
+            "status_sequence": 133,
+            "healthy": true,
+            "health_reasons": [],
+            "source_count": 180,
+            "output_count": 180,
+            "rejected_count": 0,
+            "esekf_velocity_count": 180,
+            "differenced_velocity_count": 0,
+            "source_rate_hz": 7.186441925642843,
+            "source_age_s": 0.04387013299856335,
+            "source_stamp_s": 21.699999999,
+            "source_last_gap_s": 0.0,
+            "source_max_gap_s": 0.0,
+            "source_stamp_monotonic_violations": 0,
+            "source_frame_id": "xq_lio_map",
+            "source_child_frame_id": "livox_imu",
+            "source_pose_xyz": [
+              0.0008694143012380538,
+              -0.002726403968158531,
+              -0.0021477921846562924
+            ],
+            "source_orientation_wxyz": [
+              0.9999999914902921,
+              -4.09031725560629e-05,
+              -6.0396996739248466e-05,
+              -0.00010815983180470964
+            ],
+            "mavros_subscribers": 2,
+            "ground_truth_subscribed": false
+          },
+          "max_reported_age_s": 0.1323447999311611
+        },
+        "/uav1/mavros/state": {
+          "count": 8,
+          "max_wall_gap_s": 1.4147217273712158,
+          "first_stamp": 1789537394.9387412,
+          "last_stamp": 1789537404.1919785,
+          "nonincreasing": 0,
+          "max_stamp_gap_s": 1.4148240089416504
+        },
+        "/uav1/mavros/statustext/recv": {
+          "count": 1,
+          "max_wall_gap_s": 0,
+          "first_stamp": 1789537404.3811648,
+          "last_stamp": 1789537404.3811648,
+          "nonincreasing": 0,
+          "max_stamp_gap_s": 0
+        },
+        "/livox/imu": {
+          "count": 1454,
+          "max_wall_gap_s": 0.05147194862365723,
+          "first_stamp": 14.63,
+          "last_stamp": 21.895,
+          "nonincreasing": 0,
+          "max_stamp_gap_s": 0.005000000000002558
+        },
+        "/xq/eval/p4/ground_truth": {
+          "count": 490,
+          "max_wall_gap_s": 0.0582582950592041,
+          "first_stamp": 14.631,
+          "last_stamp": 21.883,
+          "nonincreasing": 0,
+          "max_stamp_gap_s": 0.018000000000000682
+        }
+      },
+      "ros_clock_start_s": 3.544,
+      "ros_clock_end_s": 61.264,
+      "sim_to_wall_ratio": 0.7096744160351215,
+      "hashes": {
+        "sitl_runtime/logs/00000001.BIN": "38b555bdad9eac6f2f49bd7577664637731414e1af02751a8518091823166b56",
+        "sitl_runtime/eeprom.bin": "15f58a1e458356ca956e42c4693da3f6e5f21d261f06bd6728ff9a685e8eb872",
+        "rosbag/rosbag_0.db3": "122738ee13037cd203e648eb0d0d3fa743c707b8f2d10efb5264cf9f0fe92568",
+        "mission-result.json": "940e8d1ad2fd400efff51d5c5a619137be65c1341e595a33b610610cd175ecdb",
+        "mavros.log": "c7d1dce8f328fed18ec1722738527c84819c1d3556f20016c75cd8f32b11cf04",
+        "sitl.log": "1bfdb084b83c5d8c729b43dd16cf88814dfbf0dcdf5461a90cb30716fe19d219",
+        "xq-build-manifest.json": "4a43111fbc131f1d92f86e9b02dbdcf73866b7501a63689fb1dbfd0a23be19c1",
+        "runtime-dependencies.sha256": "ae61d33a6a6d57b3e9206b036a19f8663a3a2ac5b485fe3882155a90d44a067f"
+      },
+      "limitations": [
+        "DataFlash LOG_DISARMED=0 leaves startup/first rejection unobserved.",
+        "DataFlash TimeUS and ROS /clock are different epochs; no assumed equality.",
+        "ROS publication is not proof of FCU reception or fusion."
+      ]
+    },
+    {
+      "run": "/home/ld666/projects/IMPACT/experiments/results/external_nav/p4_20260916T054523Z_159319",
+      "build_git": {
+        "code": 0,
+        "output": "4ffa7a6adf8199b11347d4d7c2465600cb24b4a8"
+      },
+      "source_sha256": "d0e2162b59c927bed1e6ec5e4696dfe6b8b9d45d514b5b47588a46ca15fcc5ee",
+      "mission_status": "FAIL",
+      "arm_requests": [
+        {
+          "elapsed_s": 15.601,
+          "kind": "REQUEST",
+          "phase": "ARM",
+          "detail": "arm"
+        }
+      ],
+      "fcu_timeline": [
+        {
+          "wall_s": 1789537528.9071984,
+          "ros_clock_s": null,
+          "message": "Calibrating barometer"
+        },
+        {
+          "wall_s": 1789537529.7918305,
+          "ros_clock_s": null,
+          "message": "ArduPilot"
+        },
+        {
+          "wall_s": 1789537530.5543385,
+          "ros_clock_s": null,
+          "message": "Barometer 1 calibration complete"
+        },
+        {
+          "wall_s": 1789537530.554749,
+          "ros_clock_s": null,
+          "message": "Barometer 2 calibration complete"
+        },
+        {
+          "wall_s": 1789537530.55995,
+          "ros_clock_s": null,
+          "message": "ArduPilot Ready"
+        },
+        {
+          "wall_s": 1789537530.560294,
+          "ros_clock_s": null,
+          "message": "AHRS: DCM active"
+        },
+        {
+          "wall_s": 1789537530.9734764,
+          "ros_clock_s": null,
+          "message": "RC7: SaveWaypoint LOW"
+        },
+        {
+          "wall_s": 1789537530.9739156,
+          "ros_clock_s": null,
+          "message": "RC8: PrecisionLoiter MIDDLE"
+        },
+        {
+          "wall_s": 1789537533.180875,
+          "ros_clock_s": 3.706,
+          "message": "EKF3 IMU0 initialised"
+        },
+        {
+          "wall_s": 1789537533.1812825,
+          "ros_clock_s": 3.706,
+          "message": "EKF3 IMU1 initialised"
+        },
+        {
+          "wall_s": 1789537533.1839192,
+          "ros_clock_s": 3.706,
+          "message": "AHRS: EKF3 active"
+        },
+        {
+          "wall_s": 1789537535.1362903,
+          "ros_clock_s": 5.072,
+          "message": "EKF3 IMU1 tilt alignment complete"
+        },
+        {
+          "wall_s": 1789537535.1423657,
+          "ros_clock_s": 5.075,
+          "message": "EKF3 IMU0 tilt alignment complete"
+        },
+        {
+          "wall_s": 1789537539.806307,
+          "ros_clock_s": 8.369,
+          "message": "ArduCopter V4.5.7 (2a3dc4b7)"
+        },
+        {
+          "wall_s": 1789537539.806985,
+          "ros_clock_s": 8.369,
+          "message": "81865880de7840619af7bc58e9a47b3e"
+        },
+        {
+          "wall_s": 1789537539.8070621,
+          "ros_clock_s": 8.369,
+          "message": "Frame: QUAD/X"
+        },
+        {
+          "wall_s": 1789537541.8700998,
+          "ros_clock_s": 9.765,
+          "message": "EKF3 IMU0 yaw aligned"
+        },
+        {
+          "wall_s": 1789537541.8704321,
+          "ros_clock_s": 9.766,
+          "message": "EKF3 IMU1 yaw aligned"
+        },
+        {
+          "wall_s": 1789537541.8709865,
+          "ros_clock_s": 9.766,
+          "message": "EKF3 IMU0 is using external nav data"
+        },
+        {
+          "wall_s": 1789537541.8714006,
+          "ros_clock_s": 9.767,
+          "message": "EKF3 IMU0 initial pos NED = -0.0,0.0,0.0 (m)"
+        },
+        {
+          "wall_s": 1789537541.871791,
+          "ros_clock_s": 9.767,
+          "message": "EKF3 IMU0 initial vel NED = -0.0,0.0,0.0 (m/s)"
+        },
+        {
+          "wall_s": 1789537541.8721092,
+          "ros_clock_s": 9.767,
+          "message": "EKF3 IMU1 is using external nav data"
+        },
+        {
+          "wall_s": 1789537541.8724227,
+          "ros_clock_s": 9.768,
+          "message": "EKF3 IMU1 initial pos NED = -0.0,0.0,0.0 (m)"
+        },
+        {
+          "wall_s": 1789537541.8727143,
+          "ros_clock_s": 9.768,
+          "message": "EKF3 IMU1 initial vel NED = -0.0,0.0,0.0 (m/s)"
+        },
+        {
+          "wall_s": 1789537545.3828974,
+          "ros_clock_s": 12.221,
+          "message": "EKF3 IMU0 origin set"
+        },
+        {
+          "wall_s": 1789537545.383569,
+          "ros_clock_s": 12.222,
+          "message": "EKF3 IMU1 origin set"
+        },
+        {
+          "wall_s": 1789537545.4188929,
+          "ros_clock_s": 12.254,
+          "message": "Field Elevation Set: 565m"
+        },
+        {
+          "wall_s": 1789537558.6837735,
+          "ros_clock_s": 21.747,
+          "message": "Arm: Gyros inconsistent"
+        },
+        {
+          "wall_s": 1789537558.6842508,
+          "ros_clock_s": 21.747,
+          "message": "Arm: VisOdom: not healthy"
+        }
+      ],
+      "imu_instances": [
+        0,
+        1
+      ],
+      "imu_record_start_s": 21.828174,
+      "imu_record_end_s": 22.228036,
+      "gyro_pair_samples_before_successful_arm": 11,
+      "gyro_pair_max_deg_s_before_successful_arm": 0.021286067622401983,
+      "df_visp_count": 2,
+      "df_visp_first": [
+        {
+          "dataflash": {
+            "mavpackettype": "VISP",
+            "TimeUS": 21828174,
+            "RTimeUS": 1789537551967442,
+            "CTimeMS": 21806,
+            "PX": -0.0024328844156116247,
+            "PY": 0.0013525986578315496,
+            "PZ": 0.0015892133815214038,
+            "R": -0.004207795951515436,
+            "P": 0.008482362143695354,
+            "Y": 90.01617431640625,
+            "PErr": 0.20000000298023224,
+            "AErr": 0.20000000298023224,
+            "Rst": 0,
+            "Ign": 0,
+            "Q": 0
+          },
+          "matched_ros_stamp_error_s": 2.384185791015625e-07,
+          "ros_bag_receipt_s": 1789537551.9677753,
+          "ros_clock_at_publication_s": 16.926,
+          "publication_before_arm_warning_s": 6.716331481933594
+        },
+        {
+          "dataflash": {
+            "mavpackettype": "VISP",
+            "TimeUS": 21831173,
+            "RTimeUS": 1789537552107666,
+            "CTimeMS": 21809,
+            "PX": -0.0025101543869823217,
+            "PY": 0.0012532140826806426,
+            "PZ": 0.0016958832275122404,
+            "R": -0.0037783754523843527,
+            "P": 0.0077942716889083385,
+            "Y": 90.01576232910156,
+            "PErr": 0.20000000298023224,
+            "AErr": 0.20000000298023224,
+            "Rst": 0,
+            "Ign": 0,
+            "Q": 0
+          },
+          "matched_ros_stamp_error_s": 0.0,
+          "ros_bag_receipt_s": 1789537552.1079736,
+          "ros_clock_at_publication_s": 17.029,
+          "publication_before_arm_warning_s": 6.576107501983643
+        }
+      ],
+      "bag_metrics": {
+        "/uav1/mavros/imu/data": {
+          "count": 201,
+          "wall_span_s": 13.991358518600464,
+          "wall_hz": 14.294537570037603,
+          "max_wall_gap_s": 0.09820032119750977
+        },
+        "/uav1/mavros/local_position/odom": {
+          "count": 201,
+          "wall_span_s": 13.990264177322388,
+          "wall_hz": 14.295655712076641,
+          "max_wall_gap_s": 0.0974111557006836
+        },
+        "/uav1/mavros/state": {
+          "count": 25,
+          "wall_span_s": 27.26652455329895,
+          "wall_hz": 0.8802001866092708,
+          "max_wall_gap_s": 2.321979522705078
+        },
+        "/uav1/mavros/statustext/recv": {
+          "count": 21,
+          "wall_span_s": 25.503272771835327,
+          "wall_hz": 0.7842130764521762,
+          "max_wall_gap_s": 13.264947652816772
+        },
+        "/localization/odom": {
+          "count": 184,
+          "wall_span_s": 25.94586157798767,
+          "wall_hz": 7.053147934592244,
+          "max_wall_gap_s": 0.19080853462219238
+        },
+        "/clock": {
+          "count": 18802,
+          "wall_span_s": 26.65782904624939,
+          "wall_hz": 705.2712344798084,
+          "max_wall_gap_s": 0.10078835487365723
+        },
+        "/livox/imu": {
+          "count": 3761,
+          "wall_span_s": 26.657870292663574,
+          "wall_hz": 141.04652617485266,
+          "max_wall_gap_s": 0.10165667533874512
+        },
+        "/livox/lidar": {
+          "count": 188,
+          "wall_span_s": 26.540046453475952,
+          "wall_hz": 7.045956016987627,
+          "max_wall_gap_s": 0.18889999389648438
+        },
+        "/xq/eval/p4/ground_truth": {
+          "count": 1336,
+          "wall_span_s": 26.65526795387268,
+          "wall_hz": 50.08390845330223,
+          "max_wall_gap_s": 0.10569882392883301
+        },
+        "/uav1/mavros/odometry/out": {
+          "count": 184,
+          "wall_span_s": 25.945669174194336,
+          "wall_hz": 7.053200238212106,
+          "max_wall_gap_s": 0.1907954216003418
+        },
+        "/xq/p4/extnav/status": {
+          "count": 133,
+          "wall_span_s": 26.3999285697937,
+          "wall_hz": 5.000013528484766,
+          "max_wall_gap_s": 0.20086979866027832
+        }
+      },
+      "pre_first_arm_window": {
+        "/clock": {
+          "count": 7204,
+          "max_wall_gap_s": 0.04706573486328125
+        },
+        "/localization/odom": {
+          "count": 72,
+          "max_wall_gap_s": 0.1546030044555664,
+          "first_stamp": 14.5,
+          "last_stamp": 21.6,
+          "nonincreasing": 0,
+          "max_stamp_gap_s": 0.1000000010000015
+        },
+        "/uav1/mavros/odometry/out": {
+          "count": 72,
+          "max_wall_gap_s": 0.1547868251800537,
+          "first_stamp": 1789537548.748065,
+          "last_stamp": 1789537558.66515,
+          "nonincreasing": 0,
+          "max_stamp_gap_s": 0.15477919578552246
+        },
+        "/xq/p4/extnav/status": {
+          "count": 51,
+          "max_wall_gap_s": 0.20032358169555664,
+          "healthy": 51,
+          "last": {
+            "schema_version": 2,
+            "status_sequence": 130,
+            "healthy": true,
+            "health_reasons": [],
+            "source_count": 179,
+            "output_count": 179,
+            "rejected_count": 0,
+            "esekf_velocity_count": 179,
+            "differenced_velocity_count": 0,
+            "source_rate_hz": 7.184262449437264,
+            "source_age_s": 0.06557555997278541,
+            "source_stamp_s": 21.6,
+            "source_last_gap_s": 0.0,
+            "source_max_gap_s": 0.0,
+            "source_stamp_monotonic_violations": 0,
+            "source_frame_id": "xq_lio_map",
+            "source_child_frame_id": "livox_imu",
+            "source_pose_xyz": [
+              0.001417150267171562,
+              -0.002834078014979379,
+              -0.0016513772189762058
+            ],
+            "source_orientation_wxyz": [
+              0.9999999887543871,
+              -3.993167028000841e-05,
+              -7.386149875188913e-05,
+              -0.00012426248987645284
+            ],
+            "mavros_subscribers": 2,
+            "ground_truth_subscribed": false
+          },
+          "max_reported_age_s": 0.13694607198704034
+        },
+        "/uav1/mavros/state": {
+          "count": 8,
+          "max_wall_gap_s": 1.4375715255737305,
+          "first_stamp": 1789537549.2975829,
+          "last_stamp": 1789537558.4968371,
+          "nonincreasing": 0,
+          "max_stamp_gap_s": 1.437591791152954
+        },
+        "/uav1/mavros/statustext/recv": {
+          "count": 2,
+          "max_wall_gap_s": 0.00042748451232910156,
+          "first_stamp": 1789537558.6839013,
+          "last_stamp": 1789537558.6843297,
+          "nonincreasing": 0,
+          "max_stamp_gap_s": 0.0004284381866455078
+        },
+        "/livox/imu": {
+          "count": 1441,
+          "max_wall_gap_s": 0.04836726188659668,
+          "first_stamp": 14.6,
+          "last_stamp": 21.8,
+          "nonincreasing": 0,
+          "max_stamp_gap_s": 0.005000000000002558
+        },
+        "/xq/eval/p4/ground_truth": {
+          "count": 501,
+          "max_wall_gap_s": 0.05434417724609375,
+          "first_stamp": 14.601,
+          "last_stamp": 21.801,
+          "nonincreasing": 0,
+          "max_stamp_gap_s": 0.017000000000003013
+        }
+      },
+      "ros_clock_start_s": 3.499,
+      "ros_clock_end_s": 22.3,
+      "sim_to_wall_ratio": 0.7052712344798084,
+      "hashes": {
+        "sitl_runtime/logs/00000001.BIN": "0796dddd1f2eb246956bd40d747ad246fbf8eb71863f15f535902270f21b05be",
+        "sitl_runtime/eeprom.bin": "16ed42da24cac3073398e1e5c526bc530ec2eb9586cfacbfc3936db64eae8f10",
+        "rosbag/rosbag_0.db3": "be8e0086f3195ace2bd8cacc50a0a5ecea2ec1ff81d06af9f313ec277dde8d1a",
+        "mission-result.json": "446671f0c69e9a8f50a3ddab6261de14c3a6a051c688d7a956d2cb17a678e79b",
+        "mavros.log": "7a86a2ea027661f5b9d27a1db04d5c31b8f64ddf6691c9a2d803309f6e768b4d",
+        "sitl.log": "1bfdb084b83c5d8c729b43dd16cf88814dfbf0dcdf5461a90cb30716fe19d219",
+        "xq-build-manifest.json": "4a43111fbc131f1d92f86e9b02dbdcf73866b7501a63689fb1dbfd0a23be19c1",
+        "runtime-dependencies.sha256": "ae61d33a6a6d57b3e9206b036a19f8663a3a2ac5b485fe3882155a90d44a067f"
+      },
+      "limitations": [
+        "DataFlash LOG_DISARMED=0 leaves startup/first rejection unobserved.",
+        "DataFlash TimeUS and ROS /clock are different epochs; no assumed equality.",
+        "ROS publication is not proof of FCU reception or fusion."
+      ]
+    }
+  ],
+  "parameter_differences": {
+    "BARO1_GND_PRESS": [
+      100812.421875,
+      100811.5
+    ],
+    "BARO2_GND_PRESS": [
+      100812.1953125,
+      100809.8984375
+    ],
+    "MOT_THST_HOVER": [
+      0.35971346497535706,
+      0.38999998569488525
+    ],
+    "STAT_FLTTIME": [
+      4.0,
+      0.0
+    ],
+    "STAT_RUNTIME": [
+      30.0,
+      0.0
+    ]
+  },
+  "common_sensor_parameters": {
+    "LOG_BITMASK": 176126.0,
+    "INS_GYROFFS_X": 0.0,
+    "INS_GYROFFS_Y": 0.0,
+    "INS_GYROFFS_Z": 0.0,
+    "INS_GYR2OFFS_X": 0.0,
+    "INS_GYR2OFFS_Y": 0.0,
+    "INS_GYR2OFFS_Z": 0.0,
+    "INS_GYR3OFFS_X": 0.0,
+    "INS_GYR3OFFS_Y": 0.0,
+    "INS_GYR3OFFS_Z": 0.0,
+    "INS_ACCSCAL_X": 1.0010000467300415,
+    "INS_ACCSCAL_Y": 1.0010000467300415,
+    "INS_ACCSCAL_Z": 1.0010000467300415,
+    "INS_ACCOFFS_X": 0.0010000000474974513,
+    "INS_ACCOFFS_Y": 0.0010000000474974513,
+    "INS_ACCOFFS_Z": 0.0010000000474974513,
+    "INS_ACC2SCAL_X": 1.0010000467300415,
+    "INS_ACC2SCAL_Y": 1.0010000467300415,
+    "INS_ACC2SCAL_Z": 1.0010000467300415,
+    "INS_ACC2OFFS_X": 0.0010000000474974513,
+    "INS_ACC2OFFS_Y": 0.0010000000474974513,
+    "INS_ACC2OFFS_Z": 0.0010000000474974513,
+    "INS_ACC3SCAL_X": 1.0,
+    "INS_ACC3SCAL_Y": 1.0,
+    "INS_ACC3SCAL_Z": 1.0,
+    "INS_ACC3OFFS_X": 0.0,
+    "INS_ACC3OFFS_Y": 0.0,
+    "INS_ACC3OFFS_Z": 0.0,
+    "INS_GYRO_FILTER": 20.0,
+    "INS_ACCEL_FILTER": 20.0,
+    "INS_USE": 1.0,
+    "INS_USE2": 1.0,
+    "INS_USE3": 1.0,
+    "INS_STILL_THRESH": 2.5,
+    "INS_GYR_CAL": 0.0,
+    "INS_TRIM_OPTION": 1.0,
+    "INS_ACC_BODYFIX": 2.0,
+    "INS_POS1_X": 0.0,
+    "INS_POS1_Y": 0.0,
+    "INS_POS1_Z": 0.0,
+    "INS_POS2_X": 0.0,
+    "INS_POS2_Y": 0.0,
+    "INS_POS2_Z": 0.0,
+    "INS_POS3_X": 0.0,
+    "INS_POS3_Y": 0.0,
+    "INS_POS3_Z": 0.0,
+    "INS_GYR_ID": 2752772.0,
+    "INS_GYR2_ID": 2752780.0,
+    "INS_GYR3_ID": 0.0,
+    "INS_ACC_ID": 2753028.0,
+    "INS_ACC2_ID": 2753036.0,
+    "INS_ACC3_ID": 0.0,
+    "INS_FAST_SAMPLE": 1.0,
+    "INS_LOG_BAT_CNT": 1024.0,
+    "INS_LOG_BAT_MASK": 0.0,
+    "INS_LOG_BAT_OPT": 0.0,
+    "INS_LOG_BAT_LGIN": 20.0,
+    "INS_LOG_BAT_LGCT": 32.0,
+    "INS_ENABLE_MASK": 127.0,
+    "INS_HNTCH_ENABLE": 0.0,
+    "INS_HNTC2_ENABLE": 0.0,
+    "INS_GYRO_RATE": 0.0,
+    "INS_TCAL1_ENABLE": 0.0,
+    "INS_TCAL2_ENABLE": 0.0,
+    "INS_TCAL3_ENABLE": 0.0,
+    "INS_ACC1_CALTEMP": -300.0,
+    "INS_GYR1_CALTEMP": -300.0,
+    "INS_ACC2_CALTEMP": -300.0,
+    "INS_GYR2_CALTEMP": -300.0,
+    "INS_ACC3_CALTEMP": -300.0,
+    "INS_GYR3_CALTEMP": -300.0,
+    "INS_TCAL_OPTIONS": 0.0,
+    "INS_RAW_LOG_OPT": 0.0,
+    "LOG_BACKEND_TYPE": 1.0,
+    "LOG_FILE_BUFSIZE": 200.0,
+    "LOG_DISARMED": 0.0,
+    "LOG_REPLAY": 0.0,
+    "LOG_FILE_DSRMROT": 0.0,
+    "LOG_MAV_BUFSIZE": 8.0,
+    "LOG_FILE_TIMEOUT": 5.0,
+    "LOG_FILE_MB_FREE": 500.0,
+    "LOG_FILE_RATEMAX": 0.0,
+    "LOG_MAV_RATEMAX": 0.0,
+    "LOG_BLK_RATEMAX": 0.0,
+    "LOG_DARM_RATEMAX": 0.0,
+    "LOG_MAX_FILES": 500.0,
+    "SIM_GYR1_RND": 0.0,
+    "SIM_GYR2_RND": 0.0,
+    "SIM_GYR3_RND": 0.0,
+    "SIM_GYR1_SCALE_X": 0.0,
+    "SIM_GYR1_SCALE_Y": 0.0,
+    "SIM_GYR1_SCALE_Z": 0.0,
+    "SIM_GYR2_SCALE_X": 0.0,
+    "SIM_GYR2_SCALE_Y": 0.0,
+    "SIM_GYR2_SCALE_Z": 0.0,
+    "SIM_GYR3_SCALE_X": 0.0,
+    "SIM_GYR3_SCALE_Y": 0.0,
+    "SIM_GYR3_SCALE_Z": 0.0,
+    "SIM_GYR_FAIL_MSK": 0.0,
+    "SIM_GYR_FILE_RW": 0.0,
+    "SIM_GYR1_BIAS_X": 0.0,
+    "SIM_GYR1_BIAS_Y": 0.0,
+    "SIM_GYR1_BIAS_Z": 0.0,
+    "SIM_GYR2_BIAS_X": 0.0,
+    "SIM_GYR2_BIAS_Y": 0.0,
+    "SIM_GYR2_BIAS_Z": 0.0,
+    "SIM_GYR3_BIAS_X": 0.0,
+    "SIM_GYR3_BIAS_Y": 0.0,
+    "SIM_GYR3_BIAS_Z": 0.0,
+    "VISO_TYPE": 2.0,
+    "VISO_POS_X": 0.0,
+    "VISO_POS_Y": 0.0,
+    "VISO_POS_Z": 0.0,
+    "VISO_ORIENT": 0.0,
+    "VISO_SCALE": 1.0,
+    "VISO_DELAY_MS": 10.0,
+    "VISO_VEL_M_NSE": 0.10000000149011612,
+    "VISO_POS_M_NSE": 0.20000000298023224,
+    "VISO_YAW_M_NSE": 0.20000000298023224,
+    "VISO_QUAL_MIN": 0.0
+  }
+}
