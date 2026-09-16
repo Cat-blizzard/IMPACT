@@ -5,7 +5,7 @@
 运行提交 `a4d3fb33209b73f2a3c1514ff4709848db28d1b9` 在固定的 CPU 软件渲染、
 ArduPilot、Gazebo 插件、世界、传感器和飞控参数下完成：
 
-- 一次严格不解锁冒烟：PASS；
+- 一次严格不解锁冒烟：PASS（最终验收窗口 45.001 s；此前 30.004 s PASS 也保留）；
 - 三次独立冷启动 P4 正常任务：全部 PASS；
 - 每次任务成功和落地解除武装分别确认；
 - 每次 rosbag 与 DataFlash 实际可读，关键话题有数据；
@@ -28,7 +28,7 @@ ArduPilot、Gazebo 插件、世界、传感器和飞控参数下完成：
 | 安装文件清单 | 1667 个文件；源码、安装树和入口核对通过 |
 | ArduPilot | `2a3dc4b7bf2507120f7378a7b2fde73185e0c325`；二进制 `754e5eaf...` |
 | ArduPilot Gazebo 插件 | `082a0fe231f6e63bc8d1598f1cba461d9e2ea7f5`；二进制 `e5d11ebd...` |
-| 运行依赖清单 SHA-256 | `0b4ef308a6eea6a5ea460cefa0f537e6fe9b9c136f8d7aec0f0c328cb1c20ac1`，四组一致 |
+| 运行依赖清单 SHA-256 | `0b4ef308a6eea6a5ea460cefa0f537e6fe9b9c136f8d7aec0f0c328cb1c20ac1`，五组一致 |
 | 渲染 | `local_cpu`；llvmpipe LLVM 15.0.7；`Accelerated: no` |
 | 世界 SHA-256 | `758e70987bbd60ac60198d2654b892b476b1bf7f534935b0eeae2f7fe6dcac59` |
 | 飞控参数 SHA-256 | `2d17c98d4e1df36c92aabf0e5efcfac72dfcc72c6027f3a2ae1a24e6e5ac2ece` |
@@ -37,7 +37,7 @@ ArduPilot、Gazebo 插件、世界、传感器和飞控参数下完成：
 | 传感器桥随机种子 | `20260822` |
 
 每次运行均先用 `verify_runtime_build.py` 核对运行 Git、源码哈希、安装 marker、安装文件
-和实际 ROS/Python 入口；不匹配会在启动 SITL 前拒绝。四组最终运行的
+和实际 ROS/Python 入口；不匹配会在启动 SITL 前拒绝。五组最终运行的
 `runtime-build-verification.json` SHA-256 均为
 `85047b6a1dce35068a5ea62b29387f7d4b6bb47fd74671167d6a89c1b7d17043`。
 
@@ -58,15 +58,17 @@ ArduPilot、Gazebo 插件、世界、传感器和飞控参数下完成：
 
 | 运行 ID | 结果 | 任务时长 | ATE RMS | 最大位置误差 | DataFlash VISP |
 |---|---|---:|---:|---:|---:|
-| `p4_cpu_a4d3fb3_smoke_20260917_1` | PASS | 30.004 s 观测 | 不适用 | 不适用 | 374 |
+| `p4_cpu_a4d3fb3_smoke_20260917_1` | PASS | 30.004 s 观测（早期） | 不适用 | 不适用 | 374 |
+| `p4_cpu_a4d3fb3_smoke45_20260917_1` | PASS | 45.001 s 观测（最终门槛） | 不适用 | 不适用 | 489 |
 | `p4_cpu_a4d3fb3_group01_run01` | PASS | 67.001 s | 0.005396 m | 0.013288 m | 659 |
 | `p4_cpu_a4d3fb3_group01_run02` | PASS | 66.701 s | 0.005980 m | 0.015716 m | 657 |
 | `p4_cpu_a4d3fb3_group01_run03` | PASS | 66.501 s | 0.005660 m | 0.014097 m | 649 |
 
-冒烟窗口内实际订阅 `/localization/odom` 217 条、ExternalNav 状态 152 条、ExternalNav 输出
-217 条和 FCU state 21 条。ExternalNav 152/152 健康，FCU 始终连接且未解锁，未发现
-ARM/TAKEOFF 文本或任务节点。ROS ExternalNav 输出共 379 条，DataFlash VISP 共 374 条，
-飞控接收比例 98.68%，无 300 ms 以上接收间隔。
+最终 45 秒冒烟窗口内实际订阅 `/localization/odom` 330 条、ExternalNav 状态 230 条、
+ExternalNav 输出 330 条和 FCU state 31 条。ExternalNav 230/230 健康，FCU 始终连接且未
+解锁，未发现 ARM/TAKEOFF 文本或任务节点。该轮 rosbag 中 ROS ExternalNav 输出 493 条，
+DataFlash VISP 489 条，飞控接收比例 99.19%，无 300 ms 以上接收间隔。此前 30 秒窗口的
+217/152/217/21、98.68% 结果同样保留在索引中。
 
 三次 P4 都满足 GPS 及第二 GPS 禁用、EKF 源为 ExternalNav、prearm/vision 健康门禁、单次
 ARM、起飞悬停、矩形四点、返回、LAND、基于新鲜 FCU 状态的 `armed=false` 确认。真值仅供
@@ -96,6 +98,7 @@ ARM、起飞悬停、矩形四点、返回、LAND、基于新鲜 FCU 状态的 `
 | `p4_cpu_a131a9e_smoke_20260917_3` | PASS，中间组 | 验证最小退出修复；代码尚未形成冻结提交，不计最终组 |
 | `p4_cpu_a131a9e_group01_run01` | FAIL | 错误 ArduPilot 依赖缺少 `GPS_TYPE`；未 ARM，终止确认完整 |
 | `p4_cpu_a4d3fb3_smoke_20260917_1` | PASS | 最终冻结组冒烟 |
+| `p4_cpu_a4d3fb3_smoke45_20260917_1` | PASS | 最终冻结组 45 秒冒烟门槛补验 |
 | `p4_cpu_a4d3fb3_group01_run01` | PASS | 最终冻结组 P4 冷启动 1 |
 | `p4_cpu_a4d3fb3_group01_run02` | PASS | 最终冻结组 P4 冷启动 2 |
 | `p4_cpu_a4d3fb3_group01_run03` | PASS | 最终冻结组 P4 冷启动 3 |

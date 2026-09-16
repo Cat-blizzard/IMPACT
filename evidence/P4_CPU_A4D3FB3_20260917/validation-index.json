@@ -54,6 +54,28 @@
       "dataflash_bin_sha256": "98136a1d8864b8d66a27fc47fba1558a5055212676b6ce12b343717e4b428ab4"
     },
     {
+      "id": "p4_cpu_a4d3fb3_smoke45_20260917_1",
+      "mode": "NO_ARM_SMOKE",
+      "status": "PASS",
+      "result_directory": "experiments/results/external_nav/p4_cpu_a4d3fb3_smoke45_20260917_1",
+      "observation_seconds": 45.00117529602721,
+      "never_armed": true,
+      "mission_node_absent": true,
+      "external_nav_healthy_samples": 230,
+      "external_nav_unhealthy_samples": 0,
+      "ros_external_nav_output_count": 493,
+      "dataflash_visp_count": 489,
+      "dataflash_visp_max_receive_gap_s": 0.1299520000000003,
+      "dataflash_visp_gaps_ge_300ms": 0,
+      "summary_sha256": "84927175dde9580a8a2b1258115da386c15bfa2f4b0c8803545785eb342810da",
+      "observation_sha256": "aadf05f2479d22eae26b9d49bb86cb460235d75263aa6660dba7a507851e088d",
+      "runtime_audit_sha256": "cc350af2e4a9391dc5a0f9cfb049678ae89ac4a123d94fe3b5a168d7b311f058",
+      "health_diagnostic_sha256": "0d44d6461e5c000e115a12cc6772bcce4c7a9fe2ef217e0e3c6dc207912ef4f9",
+      "rosbag_metadata_sha256": "ec88dc44473e0669f0f804d9cc1094cec67012bc12b5f2e67b9e563bb956eab9",
+      "rosbag_db3_sha256": "2546805b5d3e91e08d0723902aac3ea1831035d0e8401a61aef4b65cefab49b7",
+      "dataflash_bin_sha256": "8c84362ca6bbb51b9295a9fb4a297bcecf18c4a5d26173e8f0dc460d909e730f"
+    },
+    {
       "id": "p4_cpu_a4d3fb3_group01_run01",
       "mode": "P4_FLIGHT",
       "status": "PASS",
@@ -135,6 +157,7 @@
     {"id": "p4_cpu_a131a9e_smoke_20260917_3", "status": "PASS", "group": "intermediate_unfrozen"},
     {"id": "p4_cpu_a131a9e_group01_run01", "status": "FAIL", "reason": "incompatible ArduPilot dependency exposed GPS1_TYPE instead of required GPS_TYPE; no arm request"},
     {"id": "p4_cpu_a4d3fb3_smoke_20260917_1", "status": "PASS", "group": "final"},
+    {"id": "p4_cpu_a4d3fb3_smoke45_20260917_1", "status": "PASS", "group": "final_observation_gate"},
     {"id": "p4_cpu_a4d3fb3_group01_run01", "status": "PASS", "group": "final"},
     {"id": "p4_cpu_a4d3fb3_group01_run02", "status": "PASS", "group": "final"},
     {"id": "p4_cpu_a4d3fb3_group01_run03", "status": "PASS", "group": "final"}
