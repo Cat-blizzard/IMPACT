@@ -7,6 +7,8 @@ install_root="${IMPACT_INSTALL:-${workspace_root}/xq_install}"
 ardupilot_root="${ARDUPILOT_ROOT:-/home/accelerate/ardupilot}"
 plugin_root="${ARDUPILOT_GAZEBO_ROOT:-/home/accelerate/ardupilot_gazebo}"
 build_manifest="${IMPACT_BUILD_MANIFEST:-${install_root}/.xq_build_manifest.json}"
+egl_terminate_guard="${install_root}/xq_gz_assets/lib/libimpact_egl_terminate_guard.so"
+use_egl_terminate_guard=false
 requested_run_dir=""
 profile="server_gpu"
 minimum_eval_duration_s=70
@@ -92,6 +94,7 @@ trap 'failure_trap "$?" "$LINENO" "$BASH_COMMAND"' ERR
 unset AMENT_PREFIX_PATH CMAKE_PREFIX_PATH COLCON_PREFIX_PATH PYTHONPATH LD_LIBRARY_PATH
 unset GZ_SIM_RESOURCE_PATH IGN_GAZEBO_RESOURCE_PATH SDF_PATH
 unset RMW_IMPLEMENTATION FASTRTPS_DEFAULT_PROFILES_FILE CYCLONEDDS_URI
+unset LD_PRELOAD
 set +u
 source /opt/ros/humble/setup.bash
 source "${install_root}/setup.bash"
@@ -120,6 +123,21 @@ timeout 10 glxinfo -B >"${run_dir}/renderer.txt" 2>&1 || {
 if [[ "$profile" == local_cpu ]] && ! grep -Eiq 'llvmpipe|software rasterizer' "${run_dir}/renderer.txt"; then
   echo "local_cpu did not resolve a software renderer." >&2; exit 2
 fi
+if [[ "$profile" == server_gpu ]]; then
+  if ! grep -Eiq 'renderer.*nvidia|device.*nvidia' "${run_dir}/renderer.txt" \
+      || grep -Eiq 'llvmpipe|softpipe|software rasterizer' "${run_dir}/renderer.txt"; then
+    echo "server_gpu did not resolve the required NVIDIA hardware renderer." >&2
+    exit 2
+  fi
+  if grep -Eiq 'd3d12' "${run_dir}/renderer.txt" \
+      && grep -Eiq 'microsoft|wsl' /proc/version; then
+    use_egl_terminate_guard=true
+    [[ -f "${egl_terminate_guard}" ]] || {
+      echo "WSL D3D12 EGL terminate guard is missing from the bound install." >&2
+      exit 2
+    }
+  fi
+fi
 export GZ_SIM_RESOURCE_PATH="${install_root}/xq_gz_assets/share/xq_gz_assets/models:${plugin_root}/models:${plugin_root}/worlds"
 export IGN_GAZEBO_RESOURCE_PATH="${GZ_SIM_RESOURCE_PATH}"
 export SDF_PATH="${GZ_SIM_RESOURCE_PATH}"
@@ -143,6 +161,7 @@ world=${world}
 install_root=${install_root}
 ardupilot_root=${ardupilot_root}
 plugin_root=${plugin_root}
+egl_terminate_guard=$([[ "${use_egl_terminate_guard}" == true ]] && echo "${egl_terminate_guard}" || echo disabled)
 build_manifest=${build_manifest}
 mavros_namespace=/uav1/mavros
 external_nav_topic=/uav1/mavros/odometry/out
@@ -163,6 +182,9 @@ sha256sum \
   "${plugin_root}/models/iris_with_ardupilot/model.sdf" \
   "${plugin_root}/models/iris_with_standoffs/model.sdf" \
   >"${run_dir}/runtime-dependencies.sha256"
+if [[ "${use_egl_terminate_guard}" == true ]]; then
+  sha256sum "${egl_terminate_guard}" >>"${run_dir}/runtime-dependencies.sha256"
+fi
 if [[ -f "${build_manifest}" ]]; then
   cp -- "${build_manifest}" "${run_dir}/xq-build-manifest.json"
 else
@@ -199,7 +221,7 @@ start_group() {
 stop_groups() {
   [[ "${stop_done}" == false ]] || return "${stop_status}"
   stop_done=true
-  local index pid round wait_status residual forced_kill
+  local index pid round wait_status residual forced_kill service_status
   local -a initial_alive=() signals=() forced_kills=()
   group_running() {
     ps -eo pgid=,stat= | awk -v group="$1" '$1 == group && $2 !~ /^Z/ {found=1} END {exit !found}'
@@ -227,14 +249,44 @@ stop_groups() {
     forced_kills+=(false)
   done
   # SITL checks its termination flag in the main loop. Keep Gazebo serving the
-  # JSON backend while SITL exits, then stop the remaining groups once.
+  # JSON backend while SITL exits, then ask the Gazebo server to shut down via
+  # its control service. Hardware rendering has crashed while handling a raw
+  # termination signal, so retain TERM only as a bounded fallback.
   for index in "${!pids[@]}"; do
     [[ "${labels[index]}" == sitl && "${initial_alive[index]}" == true ]] || continue
     kill -TERM -- "-${pids[index]}" 2>/dev/null || true
     for _ in {1..10}; do group_running "${pids[index]}" || break; sleep 0.5; done
   done
   for index in "${!pids[@]}"; do
-    [[ "${labels[index]}" != sitl && "${initial_alive[index]}" == true ]] || continue
+    [[ "${labels[index]}" == gazebo && "${initial_alive[index]}" == true ]] || continue
+    pid="${pids[index]}"
+    signals[index]=SERVER_CONTROL
+    {
+      printf 'requested_at=%s\n' "$(date -Is)"
+      printf 'service=/server_control\nrequest=stop:true\n'
+      if timeout 5 gz service -s /server_control \
+          --reqtype gz.msgs.ServerControl --reptype gz.msgs.Boolean \
+          --timeout 3000 --req 'stop: true'; then
+        service_status=0
+      else
+        service_status=$?
+      fi
+      printf 'exit_code=%s\n' "${service_status}"
+    } >"${run_dir}/gazebo-stop-service.txt" 2>&1
+    for _ in {1..20}; do group_running "${pid}" || break; sleep 0.5; done
+    if group_running "${pid}"; then
+      signals[index]=SERVER_CONTROL_THEN_TERM
+      printf 'fallback_term_at=%s\n' "$(date -Is)" \
+        >>"${run_dir}/gazebo-stop-service.txt"
+      kill -TERM -- "-${pid}" 2>/dev/null || true
+    else
+      printf 'server_exited_at=%s\n' "$(date -Is)" \
+        >>"${run_dir}/gazebo-stop-service.txt"
+    fi
+  done
+  for index in "${!pids[@]}"; do
+    [[ "${labels[index]}" != sitl && "${labels[index]}" != gazebo \
+       && "${initial_alive[index]}" == true ]] || continue
     kill -"${signals[index]}" -- "-${pids[index]}" 2>/dev/null || true
   done
   for round in {1..20}; do
@@ -364,7 +416,13 @@ wait_log "${run_dir}/sitl.log" "Loaded defaults" 45 "ArduPilot defaults"
 
 gz_args=(-r -s --headless-rendering -v 3)
 phase="start_gazebo"
-start_group gazebo "${run_dir}/gazebo.log" gz sim "${gz_args[@]}" "${world}"
+if [[ "${use_egl_terminate_guard}" == true ]]; then
+  start_group gazebo "${run_dir}/gazebo.log" \
+    env IMPACT_EGL_TERMINATE_GUARD=1 LD_PRELOAD="${egl_terminate_guard}" \
+    gz sim "${gz_args[@]}" "${world}"
+else
+  start_group gazebo "${run_dir}/gazebo.log" gz sim "${gz_args[@]}" "${world}"
+fi
 wait_log "${run_dir}/sitl.log" "JSON received" 90 "SITL-Gazebo JSON link"
 wait_log "${run_dir}/mavros.log" "Got HEARTBEAT" 60 "MAVROS heartbeat"
 
@@ -486,15 +544,16 @@ if [[ "${smoke_only}" == true ]]; then
 
   phase="validate_no_arm_smoke"
   python3 - "${run_dir}" "${observation_status}" "${process_status}" \
-    "${audit_status}" "${bag_info_status}" "${diagnostic_status}" <<'PY'
+    "${audit_status}" "${bag_info_status}" "${diagnostic_status}" "${profile}" <<'PY'
 import json
 import pathlib
 import sys
 
 run = pathlib.Path(sys.argv[1])
 observation_status, process_status, audit_status, bag_info_status, diagnostic_status = (
-    int(value) for value in sys.argv[2:]
+    int(value) for value in sys.argv[2:7]
 )
+profile = sys.argv[7]
 observation_path = run / "no-arm-observation.json"
 diagnostic_path = run / "external-nav-health-diagnostic.json"
 observation = json.loads(observation_path.read_text()) if observation_path.is_file() else {}
@@ -511,6 +570,10 @@ logs = "\n".join(
     (run / name).read_text(errors="replace")
     for name in ("p4-stack.log", "mavros.log", "gazebo.log", "sitl.log")
     if (run / name).is_file()
+)
+run_environment = dict(
+    line.split("=", 1) for line in (run / "run.env").read_text().splitlines()
+    if "=" in line
 )
 crash_markers = [
     marker for marker in (
@@ -547,6 +610,9 @@ checks = {
     ),
     "cleanup_no_residual": bool(cleanup) and all(not item.get("residual") for item in cleanup),
     "cleanup_no_crash_markers": not crash_markers,
+    "wsl_d3d12_egl_terminate_guard_applied":
+    run_environment.get("egl_terminate_guard") == "disabled"
+    or "IMPACT EGL terminate guard active" in logs,
     "rosbag_info_readable": bag_info_status == 0 and bool(
         (run / "rosbag-info.txt").read_text().strip()
     ),
@@ -560,7 +626,7 @@ checks = {
 }
 report = {
     "schema_version": 1,
-    "gate": "P4_CPU_NO_ARM_EXTERNAL_NAV_SMOKE",
+    "gate": f"P4_{profile.upper()}_NO_ARM_EXTERNAL_NAV_SMOKE",
     "status": "PASS" if all(checks.values()) else "FAIL",
     "checks": checks,
     "observation": observation,

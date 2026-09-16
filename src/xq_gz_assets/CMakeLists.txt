@@ -3,6 +3,16 @@ project(xq_gz_assets)
 
 find_package(ament_cmake REQUIRED)
 
+add_library(impact_egl_terminate_guard SHARED
+  src/impact_egl_terminate_guard.c
+)
+target_link_libraries(impact_egl_terminate_guard PRIVATE ${CMAKE_DL_LIBS})
+
+install(
+  TARGETS impact_egl_terminate_guard
+  LIBRARY DESTINATION lib
+)
+
 install(
   DIRECTORY config models worlds
   DESTINATION share/${PROJECT_NAME}
