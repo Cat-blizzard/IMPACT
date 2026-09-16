@@ -117,13 +117,18 @@ def test_independent_clearance_uses_oriented_geometry():
     assert box_clearance([2.,0.,0.],[box],radius=.2) == pytest.approx(1.3)
 
 
-def test_mission_timeout_remains_failure_and_uses_wall_timer(tmp_path):
+def test_mission_timeout_remains_failure_and_uses_wall_timer(tmp_path, monkeypatch):
     from xq_autonomy.sitl_mission_node import SITLMission
     from rclpy.clock import ClockType
+    from mavros_msgs.msg import State
     rclpy.init(args=["--ros-args","-p","session_id:=mission-test","-p","result_file:="+str(tmp_path/"mission.json")])
     mission=SITLMission()
     try:
         assert all(t.clock.clock_type == ClockType.STEADY_TIME for t in mission.timers)
+        # Isolate the timeout path with a healthy, armed FCU. The review mission
+        # tests separately exercise the real inherited health checks.
+        mission._state_cb(State(connected=True, armed=True, guided=True, mode="GUIDED"))
+        monkeypatch.setattr(mission, "_observe_health", lambda **_: (True, {"reasons": []}))
         mission.phase="ACTIVE"
         mission.phase_started=time.monotonic()
         mission.task_started=mission.get_clock().now().nanoseconds/1e9-181.

@@ -14,6 +14,8 @@ profile="server_gpu"
 minimum_eval_duration_s=70
 smoke_only=false
 observation_seconds=45
+mission_timeout_s=240
+termination_timeout_s=90
 
 usage() {
   echo "Usage: $0 [--profile local_cpu|server_gpu] [--minimum-eval-duration SECONDS] [--run-dir PATH] [--smoke-only] [--observation-seconds SECONDS]" >&2
@@ -650,7 +652,8 @@ phase="start_p4_mission"
 start_group mission "${run_dir}/mission.log" \
   ros2 run xq_autonomy xq_p4_mission --ros-args \
   -p result_file:="${mission_result}" \
-  -p mission_timeout_s:=240.0 \
+  -p mission_timeout_s:="${mission_timeout_s}.0" \
+  -p failsafe_termination_timeout_s:="${termination_timeout_s}.0" \
   -p takeoff_altitude_m:=2.0 \
   -p square_side_m:=2.0 \
   -p hover_duration_s:=5.0
@@ -679,7 +682,7 @@ if not report["passed"]:
     raise SystemExit("P4 mission ownership audit failed")
 PY
 
-mission_deadline=$((SECONDS + 260))
+mission_deadline=$((SECONDS + mission_timeout_s + termination_timeout_s + 20))
 phase="wait_p4_mission"
 while [[ ! -s "${mission_result}" ]] && ((SECONDS < mission_deadline)); do
   assert_core_alive
@@ -818,8 +821,13 @@ summary = {
     "gazebo_clean_exit": not any(x in gazebo_log + launcher_log for x in ("Segmentation fault", "core dumped")),
     "generated_at_utc": datetime.now(timezone.utc).isoformat(),
 }
+required_mission_checks = ("gps_disabled", "ekf_sources_external_nav", "takeoff_and_hover",
+                           "square_and_return", "landed_and_disarmed",
+                           "prearm_gate_passed", "single_arm_request")
 completion_passed = (summary["gazebo_clean_exit"] and runtime_audit["passed"] and
-                     artifacts["passed"] and
+                     artifacts["passed"] and mission.get("status") == "PASS" and
+                     mission.get("task_result", {}).get("success") is True and
+                     all(mission.get("checks", {}).get(key) is True for key in required_mission_checks) and
                      mission.get("termination", {}).get("confirmed") is True)
 summary["status"] = "PASS" if completion_passed else "FAIL"
 (run / "summary.json").write_text(

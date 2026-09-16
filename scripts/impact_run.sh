@@ -173,7 +173,9 @@ wait_log mavros "Got HEARTBEAT" 60
 phase="start_rosbag"
 start rosbag ros2 bag record -o "$run/rosbag" \
  /clock /tf /tf_static /livox/lidar /livox/imu /localization/odom /localization/geometry \
- /xq/p5/cloud_map /integrity/directional /integrity/information_map \
+ /xq/p5/cloud_map /xq/p5/navigation_map /xq/p5/exploration/status \
+ /impact/information_cloud /grid_map/occupancy_inflate \
+ /integrity/directional /integrity/information_map \
  /impact/planner_goal /impact/planner_candidate /impact/certified_bspline \
  /impact/authorization /impact/position_cmd /impact/mission_stage /impact/status \
  /impact/arbiter_status /uav1/mavros/state /uav1/mavros/local_position/odom \
@@ -241,11 +243,14 @@ PY
 fi
 session="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["session_id"])' "$run/run.json")"
 task_timeout="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["configuration"]["task_timeout_sim_s"])' "$run/run.json")"
+mission_timeout_s=700
+termination_timeout_s=90
 start mission ros2 run xq_autonomy impact_mission --ros-args \
  -p use_sim_time:=true -p session_id:="$session" -p result_file:="$run/mission.json" \
- -p mission_timeout_s:=700.0 -p task_timeout_sim_s:="$task_timeout" \
+ -p mission_timeout_s:="${mission_timeout_s}.0" -p task_timeout_sim_s:="$task_timeout" \
+ -p failsafe_termination_timeout_s:="${termination_timeout_s}.0" \
  -r /uav1/mavros/setpoint_position/local:=/impact/mission_hold
-deadline=$((SECONDS+720))
+deadline=$((SECONDS+mission_timeout_s+termination_timeout_s+20))
 while [[ ! -f "$run/mission.json" ]]; do
   ((SECONDS < deadline)) || { echo "Mission result missing" >&2; exit 4; }
   for pid in "${pids[@]}"; do kill -0 "$pid" 2>/dev/null || { echo "Child exited: $pid" >&2; exit 5; }; done

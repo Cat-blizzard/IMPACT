@@ -213,6 +213,17 @@ def bundle(run):
     return output
 
 
+def classify_outcome(exit_code, mission, evaluation):
+    """Keep completed failures, but require both mission and evaluation to pass."""
+    completed = bool(exit_code == 0 and mission.get("termination_confirmed") is True
+                     and evaluation.get("samples", 0) >= 50)
+    success = (completed and mission.get("status") == "PASS"
+               and mission.get("task_success") is True
+               and evaluation.get("status") == "PASS"
+               and evaluation.get("collision_events") == 0)
+    return dict(status="PASS" if success else "FAIL", completed_record=completed)
+
+
 def experiment(args):
     root = Path(args.results).resolve()
     run = root / f"{args.scenario}-{args.strategy}-s{args.seed}-{time.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
@@ -288,9 +299,7 @@ def experiment(args):
         performance(run)
         report.update(mission=mission, evaluation=evaluation, launcher_exit_code=code)
         # A task failure is a valid experimental outcome, not an infrastructure pass.
-        report["status"] = "PASS" if (code == 0 and mission["task_success"] and mission["termination_confirmed"]
-            and evaluation["samples"] >= 50 and evaluation["collision_events"] == 0) else "FAIL"
-        report["completed_record"] = bool(code == 0 and mission["termination_confirmed"] and evaluation["samples"] >= 50)
+        report.update(classify_outcome(code, mission, evaluation))
     except (OSError, ValueError, KeyError, RuntimeError) as error:
         report.update(status="ERROR", reason=str(error), completed_record=False)
     finally:
@@ -476,14 +485,20 @@ def stage_a(args):
         ),
         "revocation_behavior_recorded": any(event.get("event") == "REVOKE" for event in events) or
             any(event.get("event") == "CERTIFY" and event.get("accepted") is False for event in events),
-        "map_content_verified": map_report.get("status") == "MAP_CONTENT_VERIFIED",
+        "map_content_verified": (map_report.get("status") == "MAP_CONTENT_VERIFIED"
+                                 and map_report.get("map_content_verified") is True),
         "completed_task": bool(report.get("completed_record")),
         "task_success": report.get("status") == "PASS" and bool(mission.get("task_success")),
     }
+    failed_checks = [name for name, passed in checks.items() if not passed]
+    gate_status = "PASS" if not failed_checks else "FAIL"
+    if failed_checks == ["map_content_verified"] and map_report.get("status") == "READY_FOR_REVIEW":
+        gate_status = "REVIEW_REQUIRED"
     gate = {
-        "schema_version": 1,
+        "schema_version": 2,
         "gate": "STAGE_A_GOAL_NAVIGATION_ACCEPTANCE",
-        "status": "PASS" if all(checks.values()) and checks["task_success"] else "FAIL",
+        "status": gate_status,
+        "failed_checks": failed_checks,
         "run": str(run),
         "source_sha256": report.get("source_sha256"),
         "config_sha256": report.get("config_sha256"),

@@ -101,51 +101,46 @@ class Monitor(Node):
             return None
         return self.prearm_client.call_async(CommandLong.Request(command=401))
 
-def main():
-    ap=argparse.ArgumentParser(); ap.add_argument('--seconds',type=float,default=30); ap.add_argument('--output',required=True); a=ap.parse_args()
-    rclpy.init(); n=Monitor(); service_events=[]
-    stream=n.request_streams()
-    start=time.monotonic(); end=start+a.seconds; next_prearm=start
-    pending=[]
-    while time.monotonic()<end and rclpy.ok():
-        now=time.monotonic()
-        if now >= next_prearm:
-            future=n.request_prearm_check()
-            if future is not None: pending.append((now-start,future))
-            next_prearm += 10.0
-        rclpy.spin_once(n, timeout_sec=0.2)
-    finished=time.monotonic()
-    service_events.append(service_event('stream_request', stream))
-    for elapsed,future in pending:
-        service_events.append(service_event('prearm_check', future, elapsed_s=elapsed))
+def stream_continuous(metric, maximum_gap_s):
+    """Cover both observation boundaries, as well as gaps between samples."""
+    return metric['count'] > 1 and all(
+        isinstance(metric[name], (int, float)) and 0.0 <= metric[name] <= maximum_gap_s
+        for name in ('first_delay_s', 'max_receive_gap_s', 'last_silence_s')
+    )
+
+
+def analyze_samples(samples, start, finished, window_s, service_events=()):
+    """Evaluate captured messages without ROS services, clocks or side effects."""
     ext=[]
-    for _,_,m in n.samples['extnav']:
-        try: ext.append(json.loads(m.data))
-        except Exception: pass
-    fcu=[m for _,_,m in n.samples['fcu']]
-    texts=[{'elapsed_s':t-start,'severity':int(m.severity),'text':m.text} for t,_,m in n.samples['statustext']]
-    estimator=[m for _,_,m in n.samples['estimator']]
+    for _,_,m in samples['extnav']:
+        try:
+            value = json.loads(m.data)
+            if isinstance(value, dict):
+                ext.append(value)
+        except (TypeError, ValueError):
+            pass
+    fcu=[m for _,_,m in samples['fcu']]
+    texts=[{'elapsed_s':t-start,'severity':int(m.severity),'text':m.text} for t,_,m in samples['statustext']]
+    estimator=[m for _,_,m in samples['estimator']]
     sys_status=[{'elapsed_s':t-start, 'present':int(m.sensors_present),
                  'enabled':int(m.sensors_enabled), 'health':int(m.sensors_health),
                  'prearm_enabled':bool(m.sensors_enabled & PREARM_CHECK),
                  'prearm_healthy':bool(m.sensors_health & PREARM_CHECK),
                  'vision_enabled':bool(m.sensors_enabled & VISION_POSITION),
                  'vision_healthy':bool(m.sensors_health & VISION_POSITION)}
-                for t,_,m in n.samples['sys_status']]
+                for t,_,m in samples['sys_status']]
     metrics={k:sample_metric(v,start,finished,header=k in ('odom','extnav_output','fcu_imu'),
-                              age=k == 'odom') for k,v in n.samples.items()}
+                              age=k == 'odom') for k,v in samples.items()}
     continuity = {
-        'odom': metrics['odom']['count'] > 1 and metrics['odom']['max_receive_gap_s'] <= 0.35
-                and metrics['odom']['max_stamp_gap_s'] <= 0.35
-                and metrics['odom']['nonincreasing_stamps'] == 0,
-        'extnav': metrics['extnav']['count'] > 1 and metrics['extnav']['max_receive_gap_s'] <= 0.50,
-        'extnav_output': metrics['extnav_output']['count'] > 1
-                and metrics['extnav_output']['max_receive_gap_s'] <= 0.35
-                and metrics['extnav_output']['nonincreasing_stamps'] == 0,
-        'fcu': metrics['fcu']['count'] > 1 and metrics['fcu']['max_receive_gap_s'] <= 2.5,
-        'sys_status': metrics['sys_status']['count'] > 1 and metrics['sys_status']['max_receive_gap_s'] <= 2.5,
+        key: stream_continuous(metrics[key], gap)
+        for key, gap in {'odom': 0.35, 'extnav': 0.50, 'extnav_output': 0.35,
+                         'fcu': 2.5, 'sys_status': 2.5}.items()
     }
-    result={'schema_version':2,'window_s':a.seconds,'actual_window_s':finished-start,
+    continuity['odom'] &= (metrics['odom']['max_stamp_gap_s'] is not None
+                           and metrics['odom']['max_stamp_gap_s'] <= 0.35
+                           and metrics['odom']['nonincreasing_stamps'] == 0)
+    continuity['extnav_output'] &= metrics['extnav_output']['nonincreasing_stamps'] == 0
+    result={'schema_version':2,'window_s':window_s,'actual_window_s':finished-start,
             'metrics':metrics, 'continuity':continuity,
             'extnav_healthy_count':sum(x.get('healthy') is True for x in ext),
             'extnav_unhealthy_count':sum(x.get('healthy') is False for x in ext),
@@ -165,8 +160,10 @@ def main():
             'arm_or_takeoff_texts':[x for x in texts if 'arming motors' in x['text'].lower() or 'takeoff' in x['text'].lower()],
             'service_events':service_events}
     result['criteria'] = {
+        'observation_window_completed': finished - start >= window_s,
         'continuous_required_streams': all(continuity.values()),
-        'external_nav_continuously_healthy': bool(ext) and result['extnav_unhealthy_count'] == 0,
+        'external_nav_continuously_healthy': bool(ext)
+            and result['extnav_healthy_count'] == len(samples['extnav']),
         'fcu_connected_and_never_armed': bool(fcu) and result['fcu_connected_count'] == len(fcu)
                                          and result['fcu_armed_count'] == 0,
         'no_arm_or_takeoff_evidence': not result['arm_or_takeoff_texts'],
@@ -174,6 +171,27 @@ def main():
         'fcu_vision_final_healthy': result['vision_final_healthy'],
     }
     result['passed'] = all(result['criteria'].values())
+    return result
+
+
+def main():
+    ap=argparse.ArgumentParser(); ap.add_argument('--seconds',type=float,default=30); ap.add_argument('--output',required=True); a=ap.parse_args()
+    rclpy.init(); n=Monitor(); service_events=[]
+    stream=n.request_streams()
+    start=time.monotonic(); end=start+a.seconds; next_prearm=start
+    pending=[]
+    while time.monotonic()<end and rclpy.ok():
+        now=time.monotonic()
+        if now >= next_prearm:
+            future=n.request_prearm_check()
+            if future is not None: pending.append((now-start,future))
+            next_prearm += 10.0
+        rclpy.spin_once(n, timeout_sec=0.2)
+    finished=time.monotonic()
+    service_events.append(service_event('stream_request', stream))
+    for elapsed,future in pending:
+        service_events.append(service_event('prearm_check', future, elapsed_s=elapsed))
+    result = analyze_samples(n.samples, start, finished, a.seconds, service_events)
     open(a.output,'w').write(json.dumps(result,indent=2)+'\n'); n.destroy_node(); rclpy.shutdown()
     return 0 if result['passed'] else 1
 if __name__=='__main__': raise SystemExit(main())

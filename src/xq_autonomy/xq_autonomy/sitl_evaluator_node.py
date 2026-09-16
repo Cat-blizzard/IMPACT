@@ -173,6 +173,15 @@ class SITLEvaluator(Node):
             integrity_violation_samples=self.integrity_violations,
             availability=self.authorized_samples/len(self.coverage) if self.coverage else None,
             independent_geometry=True, fixed_initial_pose_alignment=True)
+        # This status describes independent geometric evaluation, not mission success.
+        data["checks"] = {
+            "sufficient_samples": self.samples >= 50,
+            "collision_free": self.collision_events == 0 and self.collision_samples == 0,
+            "finite_metrics": self.samples > 0 and all(math.isfinite(data[key]) for key in
+                ("minimum_truth_clearance_m", "ate_rms_m", "path_length_m")),
+        }
+        data["status"] = ("PASS" if all(data["checks"].values()) else
+                          "IN_PROGRESS" if self.samples < 50 else "FAIL")
         path = self.root / "evaluation.json"
         temp = path.with_suffix(".tmp")
         temp.write_text(json.dumps(data, indent=2)+"\n")

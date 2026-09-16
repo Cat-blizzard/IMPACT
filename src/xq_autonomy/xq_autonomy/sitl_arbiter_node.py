@@ -26,6 +26,7 @@ class SITLArbiter(Node):
         self.odom_wall = self.command_wall = self.stage_wall = self.auth_wall = 0.
         self.phase = "WAIT_FCU"
         self.brake_state = None
+        self.reset_cleanup_generation = 0
         self.buffer = Buffer()
         self.listener = TransformListener(self.buffer, self)
         self.pub = self.create_publisher(PoseStamped, "/uav1/mavros/setpoint_position/local", 20)
@@ -82,11 +83,14 @@ class SITLArbiter(Node):
 
     def tick(self):
         now = self.get_clock().now().nanoseconds / 1e9
-        was_reset = self.guard.reset_latched
         self.guard.clock(now)
-        if self.guard.reset_latched and not was_reset:
-            # The old world origin and braking endpoint are no longer meaningful.
-            self.command = self.odom = self.brake_state = None
+        if self.guard.reset_latched and self.reset_cleanup_generation != self.guard.reset_generation:
+            # update() in the authorization callback can detect the reset first.
+            # Clean each clock discontinuity regardless of its callback; only odometry
+            # received after this cleanup may establish a new braking endpoint.
+            self.command = self.odom = self.hold = self.brake_state = None
+            self.odom_wall = self.command_wall = self.auth_wall = 0.
+            self.reset_cleanup_generation = self.guard.reset_generation
         wall = time.monotonic()
         if not self.odom:
             return

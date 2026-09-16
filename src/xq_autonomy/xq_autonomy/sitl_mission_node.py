@@ -50,17 +50,39 @@ class SITLMission(P4MissionNode):
         except (ValueError, KeyError):
             pass
 
+    def _failure_to_land(self, reason):
+        if self.finalized or self.phase in ("LAND", "DESCEND", "FAILSAFE_WAIT"):
+            return
+        self.task_success = False
+        self.task_reason = reason
+        if self.task_started is not None and self.task_ended is None:
+            self.task_ended = self.get_clock().now().nanoseconds / 1e9
+        super()._failure_to_land(reason)
+
     def _finish(self, status, reason):
         if self.finalized:
             return
+        if self.task_failure_reason:
+            status = "FAIL"
+            self.task_success = False
+            self.task_reason = self.task_failure_reason
+        elif status != "PASS" and not self.task_success and self.task_reason == "NOT_STARTED":
+            self.task_reason = reason
+        state_fresh = self._fcu_state_is_fresh()
+        termination_confirmed = bool(state_fresh and not self.fcu_state.armed)
         self.finalized = True
         self.phase = "DONE" if status == "PASS" else "FAILED"
+        self._event(status, reason)
         result = dict(schema_version=1, validation="SIMULATED", session_id=self.session,
             status=status, reason=reason, task_success=self.task_success,
-            task_reason=self.task_reason, termination_confirmed=not self.fcu_state.armed and self.have_state,
+            task_reason=self.task_reason, termination_confirmed=termination_confirmed,
+            termination=dict(confirmed=termination_confirmed, state_fresh=state_fresh,
+                reason=self.termination_reason,
+                armed=bool(self.fcu_state.armed), mode=self.fcu_state.mode,
+                state_age_s=(time.monotonic()-self.fcu_state_last_wall if self.fcu_state_last_wall else None)),
             verified_parameters=self.verified_params, events=self.events,
             elapsed_wall_s=time.monotonic()-self.started,
-            elapsed_sim_s=None if self.task_started is None else (self.task_ended or self.get_clock().now().nanoseconds/1e9)-self.task_started)
+            elapsed_sim_s=None if self.task_started is None else (self.task_ended if self.task_ended is not None else self.get_clock().now().nanoseconds/1e9)-self.task_started)
         path = Path(self.get_parameter("result_file").value)
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(result, indent=2)+"\n", encoding="utf-8")
@@ -75,9 +97,36 @@ class SITLMission(P4MissionNode):
         if self.finalized:
             return
         if now < self.last_sim - 1e-6:
-            self.task_reason = "CLOCK_RESET"
-            self._transition("LAND", "clock reset: run must restart")
+            self.task_success = False
+            self.task_reason = self.task_failure_reason = "CLOCK_RESET"
+            self._failure_to_land("CLOCK_RESET")
         self.last_sim = now
+        if self.phase in ("LAND", "DESCEND"):
+            # These phases run locally, so retain the parent's shared budget
+            # across FAILSAFE_WAIT -> LAND -> DESCEND instead of restarting it.
+            termination_started = self.termination_started
+            if termination_started is None:
+                termination_started = self.phase_started
+            if wall-termination_started > float(self.get_parameter("failsafe_termination_timeout_s").value):
+                confirmed = self._fcu_state_is_fresh() and not self.fcu_state.armed
+                self.termination_reason = ("FCU disarmed at termination deadline" if confirmed
+                                           else "FCU termination not confirmed before timeout")
+                self._event("TERMINATION_CONFIRMED" if confirmed else "TERMINATION_UNCONFIRMED",
+                            self.termination_reason)
+                self._finish("FAIL", self.task_failure_reason or "termination deadline exceeded")
+                return
+        if self.phase in ("HOVER", "ACTIVE"):
+            _, snapshot = self._observe_health(require_params=False, require_prearm=True)
+            reasons = list(snapshot["reasons"])
+            if not self._fcu_state_is_fresh():
+                reasons.append("fcu_state_stale")
+            if not self.fcu_state.armed:
+                reasons.append("fcu_disarmed_during_task")
+            if str(self.fcu_state.mode).upper() != "GUIDED":
+                reasons.append("fcu_not_guided")
+            if reasons:
+                self._flight_health_loss({**snapshot, "reasons": reasons})
+                return
         if self.phase == "HOVER":
             # P4 has already confirmed takeoff; the arbiter maintains position.
             if wall-self.phase_started >= 1.0:
@@ -96,15 +145,23 @@ class SITLMission(P4MissionNode):
                 reason = "WALL_WATCHDOG"
             if reason:
                 self.task_ended = now
-                self.task_reason = reason
-                self._transition("LAND", reason)
+                if self.task_success:
+                    self.task_reason = reason
+                    self._transition("LAND", reason)
+                else:
+                    self._failure_to_land(reason)
         elif self.phase == "LAND":
             self._poll_command()
+            if self.phase != "LAND":
+                return
             self._send_command("land")
             if wall-self.phase_started > 30:
                 self._finish("FAIL", "LAND_COMMAND_TIMEOUT")
         elif self.phase == "DESCEND":
-            if self.have_state and not self.fcu_state.armed and abs(self.current_xyz[2]-self.origin_xyz[2]) <= 0.35:
+            odom_fresh = self.have_odom and wall-self.current_odom_last_wall <= float(
+                self.get_parameter("health_odom_max_age_s").value)
+            if (self._fcu_state_is_fresh() and not self.fcu_state.armed and odom_fresh
+                    and abs(self.current_xyz[2]-self.origin_xyz[2]) <= 0.35):
                 self._finish("PASS" if self.task_success else "FAIL", self.task_reason)
             elif wall-self.phase_started > 90:
                 self._finish("FAIL", "LANDING_NOT_CONFIRMED")

@@ -9,8 +9,8 @@ from dataclasses import dataclass
 import math
 import numpy as np
 
-from .alert_limit import compute_alert_limit, sample_bspline
-from .integrity_margin import certify_trajectory
+from .alert_limit import sample_bspline
+from .integrity_margin import compute_directional_protection_levels
 
 STRATEGIES = ("baseline", "conservative", "hard_gate", "recovery")
 
@@ -34,6 +34,7 @@ class ExecutionGuard:
         self.current: Authorization | None = None
         self.last_time: float | None = None
         self.reset_latched = False
+        self.reset_generation = 0
         self.revisions: dict[tuple[int, int], float] = {}
         self.accepted_highwater = (0, 0)
 
@@ -42,6 +43,7 @@ class ExecutionGuard:
             self.current = None
             self.revisions.clear()
             self.reset_latched = True
+            self.reset_generation += 1
         self.last_time = now
         return not self.reset_latched
 
@@ -114,6 +116,74 @@ class Certification:
     direction: tuple[float, float, float] = (0., 0., 0.)
 
 
+def _worst_obstacle_margin(samples, obstacles, covariance, k_alpha, fixed_reserve):
+    """Check every potentially critical sample/obstacle pair with bounded memory.
+
+    Euclidean nearest neighbors are insufficient for anisotropic uncertainty.
+    A pair may be skipped only when distance minus the largest possible PL
+    already exceeds the best (smallest) margin seen so far.
+    """
+    obstacles = np.asarray(obstacles, float)
+    covariance = np.asarray(covariance, float)
+    if obstacles.ndim != 2 or obstacles.shape[1] != 3 or not len(obstacles):
+        raise ValueError("obstacle points must be non-empty Nx3")
+    if not np.isfinite(obstacles).all():
+        raise ValueError("obstacle points must be finite")
+    # Reuse the public covariance/k-alpha validation once, outside the blocks.
+    compute_directional_protection_levels(np.eye(3), covariance, k_alpha)
+    covariance = 0.5 * (covariance + covariance.T)
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    maximum_pl = float(k_alpha) * math.sqrt(max(0., eigenvalues[-1]))
+    if not math.isfinite(maximum_pl):
+        raise ValueError("non-finite directional protection bound")
+    collision_free, minimum_margin = True, math.inf
+    critical = None
+    # No NxM distance or direction tensor is retained for the full cloud.
+    for sample_start in range(0, len(samples), 32):
+        sample_block = samples[sample_start:sample_start + 32]
+        lower, upper = sample_block.min(axis=0), sample_block.max(axis=0)
+        for obstacle_start in range(0, len(obstacles), 1024):
+            obstacle_block = obstacles[obstacle_start:obstacle_start + 1024]
+            if critical is not None:
+                # Distance to the block's AABB lower-bounds distance to every
+                # sample. Prune only points that cannot worsen the margin AND
+                # cannot violate geometric clearance (also used by baselines).
+                outside = np.maximum(np.maximum(lower - obstacle_block, obstacle_block - upper), 0.)
+                lower_distances = np.linalg.norm(outside, axis=1)
+                radius = max(fixed_reserve, fixed_reserve + maximum_pl + minimum_margin)
+                radius += 1e-12 * max(1., abs(radius))
+                obstacle_block = obstacle_block[lower_distances <= radius]
+                if not len(obstacle_block):
+                    continue
+            delta = obstacle_block[None, :, :] - sample_block[:, None]
+            distances = np.linalg.norm(delta, axis=2)
+            if not np.isfinite(distances).all():
+                raise ValueError("non-finite obstacle distances")
+            collision_free = collision_free and bool(distances.min() >= fixed_reserve)
+            relevant = distances - fixed_reserve - maximum_pl <= minimum_margin
+            if not np.any(relevant):
+                continue
+            selected_distances = distances[relevant]
+            directions = delta[relevant]
+            nonzero = selected_distances > 0.
+            directions[nonzero] /= selected_distances[nonzero, None]
+            # An obstacle at the sample is a collision; use the worst direction
+            # for finite, conservative diagnostics instead of a zero unit vector.
+            directions[~nonzero] = eigenvectors[:, -1]
+            variances = np.einsum("ni,ij,nj->n", directions, covariance, directions)
+            protections = float(k_alpha) * np.sqrt(np.maximum(variances, 0.))
+            limits = selected_distances - fixed_reserve
+            margins = limits - protections
+            if not np.isfinite(margins).all():
+                raise ValueError("non-finite directional margins")
+            index = int(np.argmin(margins))
+            if margins[index] < minimum_margin:
+                minimum_margin = float(margins[index])
+                critical = (float(limits[index]), float(protections[index]),
+                            tuple(float(v) for v in directions[index]))
+    return collision_free, minimum_margin, critical
+
+
 def certify_final(points, knots, degree, obstacles, covariance, *, strategy,
                   k_alpha, elapsed=0.0, input_age=0.0, tracking_error=0.0,
                   speed_limit=0.65, acceleration_limit=1.0, reserve=0.10,
@@ -132,18 +202,21 @@ def certify_final(points, knots, degree, obstacles, covariance, *, strategy,
     samples = sample_bspline(points, knots, degree, sample_interval,
                              minimum_parameter_s=float(knots[degree]) + max(0., elapsed))
     stopping = speed * speed / (2 * braking_acceleration)
-    alert = compute_alert_limit(samples, obstacles, speed_mps=speed,
-        latency_p99_s=latency + input_age, maximum_acceleration_mps2=acceleration_limit,
-        body_radius_m=body_radius, base_reserve_m=0.10 + speed * sample_interval,
-        tracking_reserve_m=max(0.10, tracking_error), dynamic_reserve_m=stopping)
-    result = certify_trajectory(alert.alert_limits, alert.obstacle_directions, covariance,
-                                k_alpha=k_alpha, margin_reserve=reserve)
-    i = result.critical_index
-    collision_ok = bool(np.min(alert.alert_limits) >= 0)
-    accepted = collision_ok and (strategy in ("baseline", "conservative") or result.accepted)
+    reserves = (body_radius, latency + input_age, acceleration_limit, reserve, stopping)
+    if not np.isfinite(reserves).all() or min(reserves) < 0:
+        raise ValueError("certification reserves must be nonnegative and finite")
+    fixed_reserve = (body_radius + 0.10 + speed * sample_interval
+                     + max(0.10, tracking_error) + stopping
+                     + speed * (latency + input_age)
+                     + 0.5 * acceleration_limit * (latency + input_age) ** 2)
+    if not math.isfinite(fixed_reserve):
+        raise ValueError("non-finite certification reserve")
+    collision_ok, margin, critical = _worst_obstacle_margin(
+        samples, obstacles, covariance, k_alpha, fixed_reserve)
+    accepted = collision_ok and (strategy in ("baseline", "conservative") or margin >= reserve)
+    alert, protection, direction = critical
     return Certification(accepted, "ACCEPT" if accepted else "MARGIN" if collision_ok else "CLEARANCE",
-        float(alert.alert_limits[i]), float(result.protection_levels[i]), result.minimum_margin,
-        speed, acceleration, tuple(float(v) for v in alert.obstacle_directions[i]))
+        alert, protection, margin, speed, acceleration, direction)
 
 
 def brake_samples(position, velocity, elapsed, deceleration=0.7):

@@ -78,6 +78,7 @@ class P4MissionNode(Node):
     # takeoff altitude target.  Position setpoints therefore start only after
     # ASCEND has confirmed a stable arrival at the requested altitude.
     POSITION_CONTROL_PHASES = frozenset(("HOVER", "TRACK_SQUARE"))
+    TERMINATION_PHASES = frozenset(("LAND", "DESCEND", "FAILSAFE_WAIT"))
 
     REQUIRED_PARAMS = {
         "AHRS_EKF_TYPE": 3,
@@ -213,6 +214,7 @@ class P4MissionNode(Node):
         self.phase = "WAIT_FCU"
         self.phase_started = time.monotonic()
         self.started = self.phase_started
+        self.termination_started: float | None = None
         self.last_request = 0.0
         self.last_prearm_request = 0.0
         self.arm_request_count = 0
@@ -321,8 +323,11 @@ class P4MissionNode(Node):
         self.get_logger().info(f"P4 {kind}: {detail}")
 
     def _transition(self, phase: str, detail: str) -> None:
+        now = time.monotonic()
+        if phase in self.TERMINATION_PHASES and getattr(self, "termination_started", None) is None:
+            self.termination_started = now
         self.phase = phase
-        self.phase_started = time.monotonic()
+        self.phase_started = now
         self.pending_command = None
         self.last_request = 0.0
         self.arrival_started = None
@@ -672,11 +677,15 @@ class P4MissionNode(Node):
     def _finish(self, status: str, reason: str) -> None:
         if self.finalized:
             return
+        state_fresh = self._fcu_state_is_fresh()
+        termination_confirmed = bool(state_fresh and not self.fcu_state.armed)
+        if status == "PASS" and self.task_failure_reason:
+            status, reason = "FAIL", self.task_failure_reason
+        elif status == "PASS" and not termination_confirmed:
+            status, reason = "FAIL", "landing/disarm not confirmed by fresh FCU state"
         self.finalized = True
         self.phase = "DONE" if status == "PASS" else "FAILED"
         self._event(status, reason)
-        state_fresh = self._fcu_state_is_fresh()
-        termination_confirmed = bool(state_fresh and not self.fcu_state.armed)
         if termination_confirmed:
             self.termination_reason = self.termination_reason or "FCU disarmed"
         else:
@@ -711,7 +720,7 @@ class P4MissionNode(Node):
                 ),
                 "takeoff_and_hover": any(event["phase"] == "HOVER" for event in self.events),
                 "square_and_return": len(self.completed_waypoints) == 4,
-                "landed_and_disarmed": not bool(self.fcu_state.armed),
+                "landed_and_disarmed": termination_confirmed,
                 "prearm_gate_passed": any(event["kind"] == "PREARM_GATE_PASS" for event in self.events),
                 "single_arm_request": self.arm_request_count == 1,
             },
@@ -754,7 +763,19 @@ class P4MissionNode(Node):
             self._publish_setpoint()
         self._poll_command()
         now = time.monotonic()
-        if now - self.started > float(self.get_parameter("mission_timeout_s").value):
+        if self.phase in self.TERMINATION_PHASES:
+            termination_started = getattr(self, "termination_started", None)
+            if termination_started is None:
+                termination_started = self.phase_started
+            if now - termination_started > float(self.get_parameter("failsafe_termination_timeout_s").value):
+                confirmed = self._fcu_state_is_fresh() and not self.fcu_state.armed
+                self.termination_reason = ("FCU disarmed at termination deadline" if confirmed
+                                           else "FCU termination not confirmed before timeout")
+                self._event("TERMINATION_CONFIRMED" if confirmed else "TERMINATION_UNCONFIRMED",
+                            self.termination_reason)
+                self._finish("FAIL", self.task_failure_reason or "termination deadline exceeded")
+                return
+        elif now - self.started > float(self.get_parameter("mission_timeout_s").value):
             self._failure_to_land(f"mission timeout in {self.phase}")
             return
         if self.have_state and not self.fcu_state.connected and self.phase != "WAIT_FCU":
@@ -779,10 +800,9 @@ class P4MissionNode(Node):
                 self.termination_reason = "FCU disarmed after health loss"
                 self._event("TERMINATION_CONFIRMED", self.termination_reason)
                 self._finish("FAIL", f"{self.task_failure_reason or 'flight health lost'}; termination confirmed")
-            elif now - self.phase_started > float(self.get_parameter("failsafe_termination_timeout_s").value):
-                self.termination_reason = "FCU termination not confirmed before timeout"
-                self._event("TERMINATION_UNCONFIRMED", self.termination_reason)
-                self._finish("FAIL", f"{self.task_failure_reason or 'flight health lost'}; termination unconfirmed")
+            elif (self._fcu_state_is_fresh() and self.fcu_state.connected
+                  and self.fcu_state.armed and str(self.fcu_state.mode).upper() != "LAND"):
+                self._transition("LAND", "fresh FCU state restored; complete failure termination")
             return
 
         if self.phase == "WAIT_FCU":
@@ -858,8 +878,11 @@ class P4MissionNode(Node):
         elif self.phase == "LAND":
             self._send_command("land")
         elif self.phase == "DESCEND":
-            if not self.fcu_state.armed and abs(self.current_xyz[2] - self.origin_xyz[2]) <= 0.35:
-                self._finish("PASS", "GPS-off LIO ExternalNav takeoff-hover-rectangle-return-land completed")
+            if (self._fcu_state_is_fresh() and not self.fcu_state.armed
+                    and abs(self.current_xyz[2] - self.origin_xyz[2]) <= 0.35):
+                status = "FAIL" if self.task_failure_reason else "PASS"
+                reason = self.task_failure_reason or "GPS-off LIO ExternalNav takeoff-hover-rectangle-return-land completed"
+                self._finish(status, reason)
             elif now - self.phase_started > 60.0:
                 self._finish("FAIL", "landing/disarm not confirmed")
 

@@ -1,0 +1,132 @@
+"""Regression tests for Stage A evidence contracts, without launching flight."""
+import argparse
+import json
+import sqlite3
+from types import SimpleNamespace
+
+import pytest
+import yaml
+
+import impact
+from diagnose_stage_a_maps import EXPECTED, audit
+
+
+def recorded_bag(root, *, missing=None, zero_count=None, wrong_type=None):
+    bag = root / "rosbag"
+    bag.mkdir()
+    storage = bag / "case.db3"
+    with sqlite3.connect(storage) as db:
+        db.execute("CREATE TABLE topics (id INTEGER PRIMARY KEY, name TEXT, type TEXT)")
+        db.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, topic_id INTEGER, data BLOB)")
+        for index, (topic, kind) in enumerate(EXPECTED.items(), 1):
+            if topic == missing:
+                continue
+            db.execute("INSERT INTO topics VALUES (?, ?, ?)",
+                       (index, topic, "std_msgs/msg/String" if topic == wrong_type else kind))
+            if topic != zero_count:
+                # Inventory does not certify CDR payloads or map contents.
+                db.execute("INSERT INTO messages VALUES (?, ?, ?)", (index, index, b"inventory-only"))
+    (bag / "metadata.yaml").write_text(yaml.safe_dump({"rosbag2_bagfile_information": {
+        "storage_identifier": "sqlite3", "relative_file_paths": [storage.name]}}))
+    return bag
+
+
+def test_arbitrary_map_file_and_topic_strings_cannot_verify_map(tmp_path):
+    (tmp_path / "rosbag").mkdir()
+    (tmp_path / "rosbag/metadata.yaml").write_text("\n".join(EXPECTED))
+    (tmp_path / "map.txt").write_text("not a map")
+    result = audit(tmp_path)
+    assert result["status"] == "UNVERIFIED"
+    assert result["map_content_verified"] is False
+    assert not result["artifacts"]["ego_collision_map_artifact"]
+
+
+def test_recorded_topics_are_only_ready_for_content_review(tmp_path):
+    recorded_bag(tmp_path)
+    result = audit(tmp_path)
+    assert result["status"] == "READY_FOR_REVIEW"
+    assert result["map_content_verified"] is False
+    assert result["artifacts"]["information_map_artifact"]
+    assert result["artifacts"]["ego_collision_map_artifact"]
+    assert len(result["bag_files"][0]["sha256"]) == 64
+
+
+@pytest.mark.parametrize("defect", ["missing", "zero_count", "wrong_type"])
+def test_collision_map_must_have_recorded_messages_of_correct_type(tmp_path, defect):
+    recorded_bag(tmp_path, **{defect: "/grid_map/occupancy_inflate"})
+    assert audit(tmp_path)["status"] == "UNVERIFIED"
+
+
+def test_bag_inventory_rejects_escaping_storage_paths(tmp_path):
+    bag = recorded_bag(tmp_path)
+    (bag / "metadata.yaml").write_text(yaml.safe_dump({"rosbag2_bagfile_information": {
+        "storage_identifier": "sqlite3", "relative_file_paths": ["../outside.db3"]}}))
+    result = audit(tmp_path)
+    assert result["status"] == "UNVERIFIED" and result["errors"]
+    assert not (tmp_path / "outside.db3").exists()
+
+
+def write_actual_evaluation(root, *, samples=100, collisions=0, clearance=1.):
+    pytest.importorskip("rclpy")
+    from xq_autonomy.sitl_evaluator_node import SITLEvaluator
+    evaluator = SimpleNamespace(root=root, last_active_sim=10., start_sim=0.,
+        samples=samples, collision_samples=collisions, collision_events=collisions,
+        hmi=0, dropped_pairs=0, path_length=12., stopped_time=0., stopping_durations=[],
+        minimum_clearance=clearance, squared_errors=[0.0001], started_wall=0.,
+        coverage=[True], integrity_violations=0, authorized_samples=1)
+    SITLEvaluator.write(evaluator)
+    return impact.read_json(root / "evaluation.json")
+
+
+@pytest.mark.parametrize("samples,collisions,expected", [
+    (100, 0, "PASS"), (0, 0, "IN_PROGRESS"), (100, 1, "FAIL"),
+])
+def test_evaluator_emits_actual_geometric_status(tmp_path, samples, collisions, expected):
+    report = write_actual_evaluation(tmp_path, samples=samples, collisions=collisions)
+    assert report["status"] == expected
+
+
+def test_actual_evaluator_output_reaches_map_review_without_schema_failure(tmp_path, monkeypatch):
+    run = tmp_path / "normal-baseline-s1000"
+    run.mkdir()
+    recorded_bag(run)
+    evaluation = write_actual_evaluation(run)
+    report = dict(status="PASS", completed_record=True, source_sha256="source", config_sha256="cfg",
+        mission=dict(gate="P16", task_success=True, termination_confirmed=True), evaluation=evaluation)
+    (run / "sitl_runtime/logs").mkdir(parents=True)
+    (run / "sitl_runtime/logs/1.BIN").write_bytes(b"fixture")
+    (run / "events.jsonl").write_text(
+        json.dumps(dict(event="CERTIFY", trajectory_id=1, accepted=True)) + "\n" +
+        json.dumps(dict(event="REVOKE")) + "\n")
+    monkeypatch.setattr(impact, "experiment", lambda args: (run, report))
+    result = impact.stage_a(argparse.Namespace(results=str(tmp_path), scenario="normal",
+        strategy="baseline", seed=1000))
+    gate = impact.read_json(run / "stage-a-validation.json")
+    assert gate["checks"]["evaluation_pass"]
+    assert gate["failed_checks"] == ["map_content_verified"]
+    assert gate["status"] == "REVIEW_REQUIRED" and result != 0
+
+
+def test_runner_records_required_map_evidence():
+    # Check the actual rosbag invocation, not comments or unused topic constants.
+    script = (impact.ROOT / "scripts/impact_run.sh").read_text()
+    recorder = script.split("start rosbag ros2 bag record", 1)[1].split("start stack", 1)[0]
+    for topic in EXPECTED:
+        assert topic in recorder.split(), topic
+
+
+@pytest.mark.parametrize("mission_status,evaluation_status,expected", [
+    ("PASS", "PASS", "PASS"), ("FAIL", "PASS", "FAIL"), ("PASS", "FAIL", "FAIL"),
+])
+def test_goal_reached_does_not_override_failed_termination_deadline(mission_status, evaluation_status, expected):
+    mission = dict(status=mission_status, task_success=True, termination_confirmed=True)
+    evaluation = dict(status=evaluation_status, samples=100, collision_events=0)
+    result = impact.classify_outcome(0, mission, evaluation)
+    assert result == dict(status=expected, completed_record=True)
+
+
+def test_unconfirmed_termination_cannot_be_completed_outcome():
+    result = impact.classify_outcome(0,
+        dict(status="PASS", task_success=True, termination_confirmed=False),
+        dict(status="PASS", samples=100, collision_events=0))
+    assert result == dict(status="FAIL", completed_record=False)
