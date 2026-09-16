@@ -332,7 +332,7 @@ wait_log() {
 
 graph_probe() {
   local topic="$1" output="$2"
-  timeout 15 ros2 topic info --no-daemon "${topic}" -v >"${output}" 2>&1
+  timeout 15 ros2 topic info --no-daemon --spin-time 2 "${topic}" -v >"${output}" 2>&1
   date -Is >"${output%.txt}-collected-at.txt"
 }
 
@@ -402,9 +402,9 @@ python3 "${script_dir}/wait_for_odometry.py" \
 assert_core_alive
 
 phase="audit_prearm_graph"
-timeout 15 ros2 topic list --no-daemon -t >"${run_dir}/ros-topics.txt" 2>&1
-timeout 15 ros2 node list --no-daemon >"${run_dir}/ros-nodes.txt" 2>&1
-timeout 15 ros2 service list --no-daemon -t >"${run_dir}/ros-services.txt" 2>&1
+timeout 15 ros2 topic list --no-daemon --spin-time 2 -t >"${run_dir}/ros-topics.txt" 2>&1
+timeout 15 ros2 node list --no-daemon --spin-time 2 >"${run_dir}/ros-nodes.txt" 2>&1
+timeout 15 ros2 service list --no-daemon --spin-time 2 -t >"${run_dir}/ros-services.txt" 2>&1
 timeout 15 gz topic -l >"${run_dir}/gz-topics.txt" 2>&1
 graph_probe /xq/p4/extnav/status "${run_dir}/extnav-status-graph.txt"
 graph_probe /uav1/mavros/odometry/out "${run_dir}/external-nav-topic-graph.txt"

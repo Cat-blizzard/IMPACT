@@ -140,7 +140,7 @@ wait_log() {
 }
 graph_probe() {
   topic="$1"; output="$2"
-  if ! timeout 15 ros2 topic info "$topic" -v >"$output" 2>&1; then
+  if ! timeout 15 ros2 topic info --no-daemon --spin-time 2 "$topic" -v >"$output" 2>&1; then
     printf 'probe_exit_nonzero=true\n' >>"$output"
   fi
   printf '%s\n' "$(date -Is)" >"${output%.txt}-collected-at.txt"
@@ -195,9 +195,9 @@ graph_probe /uav1/mavros/setpoint_position/local "$run/setpoint-graph.txt"
 graph_probe /xq/p4/extnav/status "$run/extnav-status-graph.txt"
 graph_probe /uav1/mavros/odometry/out "$run/extnav-output-graph.txt"
 graph_probe /uav1/mavros/state "$run/mavros-state-graph.txt"
-timeout 15 ros2 node list --no-daemon >"$run/ros-nodes-prearm.txt" 2>&1
+timeout 15 ros2 node list --no-daemon --spin-time 2 >"$run/ros-nodes-prearm.txt" 2>&1
 printf '%s\n' "$(date -Is)" >"$run/ros-nodes-prearm-collected-at.txt"
-timeout 15 ros2 service list --no-daemon -t >"$run/ros-services-prearm.txt" 2>&1
+timeout 15 ros2 service list --no-daemon --spin-time 2 -t >"$run/ros-services-prearm.txt" 2>&1
 printf '%s\n' "$(date -Is)" >"$run/ros-services-prearm-collected-at.txt"
 audit_args=("$run" "$profile")
 [[ "${IMPACT_SMOKE_ONLY:-0}" == 1 ]] && audit_args+=(--smoke)
