@@ -37,6 +37,15 @@ cleanup() {
   group_running() {
     ps -eo pgid=,stat= | awk -v group="$1" '$1 == group && $2 !~ /^Z/ {found=1} END {exit !found}'
   }
+  record_group() {
+    local group="$1" label="$2" stage="$3"
+    ps -eo pid=,ppid=,pgid=,sid=,stat=,etimes=,cmd= | awk \
+      -v group="$group" -v label="$label" -v stage="$stage" \
+      'BEGIN {OFS="\t"} $3 == group {print stage,label,$0}' \
+      >>"$run/cleanup-process-groups.tsv"
+  }
+  printf 'stage\tlabel\tpid\tppid\tpgid\tsid\tstat\tetimes\tcmd\n' \
+    >"$run/cleanup-process-groups.tsv"
   for index in "${!pids[@]}"; do
     pid="${pids[index]}"
     initial_alive=false
@@ -70,15 +79,34 @@ cleanup() {
     [[ "$alive" == false ]] && break
     sleep 1
   done
-  for pid in "${pids[@]}"; do group_running "$pid" && kill -TERM -- "-$pid" 2>/dev/null || true; done
+  for index in "${!pids[@]}"; do
+    pid="${pids[index]}"
+    if group_running "$pid"; then
+      record_group "$pid" "${labels[index]}" before_term
+      kill -TERM -- "-$pid" 2>/dev/null || true
+    fi
+  done
   sleep 2
   for index in "${!pids[@]}"; do
     pid="${pids[index]}"
-    group_running "$pid" && kill -KILL -- "-$pid" 2>/dev/null || true
+    if group_running "$pid"; then
+      record_group "$pid" "${labels[index]}" before_kill
+      kill -KILL -- "-$pid" 2>/dev/null || true
+    fi
     wait "$pid" 2>/dev/null
     wait_status=$?
+    # A launch parent can be reaped before every child in its process group has
+    # observed SIGKILL.  Give the kernel a bounded interval to remove those
+    # members; only a group still running after this interval is a residual.
+    for _ in {1..10}; do
+      group_running "$pid" || break
+      sleep 0.5
+    done
     residual=false
-    group_running "$pid" && residual=true
+    if group_running "$pid"; then
+      residual=true
+      record_group "$pid" "${labels[index]}" residual
+    fi
     python3 - "${labels[index]}" "$pid" "${cleanup_initial[index]}" \
       "${cleanup_signals[index]}" "$wait_status" "$residual" >>"$run/cleanup-processes.jsonl" <<'PY'
 import json,sys
