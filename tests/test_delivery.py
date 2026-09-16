@@ -84,7 +84,7 @@ def test_extnav_graph_resolves_unknown_mavros_endpoint_only_with_full_identity()
               "Subscription count: 1\nNode name: _NODE_NAME_UNKNOWN_\n"
               "Node namespace: _NODE_NAMESPACE_UNKNOWN_\nEndpoint type: SUBSCRIPTION\n"
               "GID: 01.02.03.04.05.06.07.08.00.00.01.04\n")
-    identity = ("Publisher count: 1\nNode name: sys_status\n"
+    identity = ("Publisher count: 1\nNode name: sys\n"
                 "Node namespace: /uav1/mavros\nEndpoint type: PUBLISHER\n"
                 "GID: 01.02.03.04.05.06.07.08.00.00.02.03\n")
     result = check_extnav(status, output, identity, True, True)

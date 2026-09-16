@@ -50,7 +50,7 @@ def check_extnav(status_text, output_text, mavros_identity_text="",
     identity_publishers = _endpoints(mavros_identity_text, "PUBLISHER")
     mavros_participants = {
         item["participant_gid"] for item in identity_publishers
-        if item.get("node") == "sys_status"
+        if item.get("node") in {"sys", "sys_status"}
         and item.get("namespace") == "/uav1/mavros"
         and item.get("participant_gid")
     }
