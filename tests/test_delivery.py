@@ -54,6 +54,11 @@ def test_graph_audit_checks_endpoint_owners():
     assert check_graph(recorder, setpoint, require_evaluator=False)["truth_isolation"]
     assert not check_graph(recorder, setpoint, require_evaluator=True)["truth_isolation"]
     assert not check_graph("Publisher count: 1\n", setpoint, require_evaluator=False)["truth_isolation"]
+    unknown = ("Publisher count: 1\nNode name: _NODE_NAME_UNKNOWN_\n"
+               "Endpoint type: SUBSCRIPTION\nGID: 01.02.03.04.05.06.07.08.00.00.01.04\n")
+    assert check_graph(unknown, setpoint, require_evaluator=False,
+                       recorder_participants={"01.02.03.04.05.06.07.08"})["truth_isolation"]
+    assert not check_graph(unknown, setpoint, require_evaluator=False)["truth_isolation"]
 
 
 def test_extnav_graph_checks_direction_and_unique_endpoints():
@@ -65,6 +70,7 @@ def test_extnav_graph_checks_direction_and_unique_endpoints():
     assert result["status_single_publisher"]
     assert result["output_single_adapter_publisher"]
     assert result["mavros_output_subscription"]
+    assert result["output_publishers"][0]["gid"] == "aa"
     duplicate = status + status.replace("GID: aa", "GID: cc")
     assert not check_extnav(duplicate, output)["status_single_publisher"]
 

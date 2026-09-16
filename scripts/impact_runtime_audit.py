@@ -5,38 +5,47 @@ import re
 import sys
 
 
-def check_graph(truth, setpoint, require_evaluator=True):
+def _endpoints(text, kind):
+    result = []
+    for section in re.split(r"\n(?=Node name:)", text):
+        if f"Endpoint type: {kind}" not in section:
+            continue
+        node = re.search(r"Node name: (\S+)", section)
+        gid = re.search(r"GID: ([0-9a-fA-F.]+)", section)
+        ns = re.search(r"Node namespace: (\S+)", section)
+        full_gid = gid[1] if gid else None
+        result.append({"node": node[1] if node else None, "namespace": ns[1] if ns else None,
+                       "gid": full_gid,
+                       "participant_gid": ".".join(full_gid.split(".")[:8]) if full_gid else None})
+    return result
+
+
+def check_graph(truth, setpoint, require_evaluator=True, recorder_participants=()):
     # ros2 topic info -v sections name endpoint type and node name.
-    subscribers = []
-    for section in re.split(r"\n(?=Node name:)", truth):
-        if "Endpoint type: SUBSCRIPTION" in section:
-            match = re.search(r"Node name: (\S+)", section)
-            if match: subscribers.append(match[1])
-    allowed = all(name == "impact_evaluator" or name.startswith("rosbag2_recorder") for name in subscribers)
+    endpoints = _endpoints(truth, "SUBSCRIPTION")
+    subscribers = [item["node"] for item in endpoints]
+    recorder_participants = set(recorder_participants)
+    resolved = []
+    for item in endpoints:
+        node = item["node"]
+        if node == "_NODE_NAME_UNKNOWN_" and item["participant_gid"] in recorder_participants:
+            node = "rosbag2_recorder@gid"
+        resolved.append({**item, "resolved_node": node})
+    allowed = all(item["resolved_node"] == "impact_evaluator" or
+                  item["resolved_node"].startswith("rosbag2_recorder") for item in resolved)
     count = re.search(r"Publisher count: (\d+)", setpoint)
     owner = "Node name: impact_arbiter" in setpoint
-    expected = "impact_evaluator" in subscribers if require_evaluator else bool(subscribers)
-    return dict(truth_subscribers=subscribers,
+    expected = "impact_evaluator" in [x["resolved_node"] for x in resolved] if require_evaluator else bool(resolved)
+    return dict(truth_subscribers=subscribers, truth_endpoints=resolved,
         truth_isolation=allowed and expected,
         sole_setpoint_publisher=bool(count and count[1] == "1" and owner))
 
 
 def check_extnav(status_text, output_text):
     """Reject duplicate/stale ExternalNav adapters before arming."""
-    def endpoints(text, kind):
-        result = []
-        for section in re.split(r"\n(?=Node name:)", text):
-            if f"Endpoint type: {kind}" not in section:
-                continue
-            node = re.search(r"Node name: (\S+)", section)
-            gid = re.search(r"GID: ([0-9a-fA-F]+)", section)
-            ns = re.search(r"Node namespace: (\S+)", section)
-            result.append({"node": node[1] if node else None, "namespace": ns[1] if ns else None,
-                           "gid": gid[1] if gid else None})
-        return result
-    status_publishers = endpoints(status_text, "PUBLISHER")
-    output_publishers = endpoints(output_text, "PUBLISHER")
-    output_subscribers = endpoints(output_text, "SUBSCRIPTION")
+    status_publishers = _endpoints(status_text, "PUBLISHER")
+    output_publishers = _endpoints(output_text, "PUBLISHER")
+    output_subscribers = _endpoints(output_text, "SUBSCRIPTION")
     return dict(status_publishers=status_publishers,
                 status_single_publisher=(len(status_publishers) == 1 and
                                          status_publishers[0]["node"] == "xq_p4_external_nav"),
@@ -71,14 +80,17 @@ def renderer_maps(pid):
 def main():
     run, profile = Path(sys.argv[1]), sys.argv[2]
     smoke = "--smoke" in sys.argv
-    data = check_graph((run/"truth-graph.txt").read_text(), (run/"setpoint-graph.txt").read_text(),
-                       require_evaluator=not smoke)
     status_graph = run/"extnav-status-graph.txt"
     output_graph = run/"extnav-output-graph.txt"
-    data["extnav"] = check_extnav(
+    extnav = check_extnav(
         status_graph.read_text() if status_graph.exists() else "",
         output_graph.read_text() if output_graph.exists() else "",
     )
+    recorder_participants = {x["participant_gid"] for x in extnav["output_subscribers"]
+                             if x["node"].startswith("rosbag2_recorder")}
+    data = check_graph((run/"truth-graph.txt").read_text(), (run/"setpoint-graph.txt").read_text(),
+                       require_evaluator=not smoke, recorder_participants=recorder_participants)
+    data["extnav"] = extnav
     data.update(renderer_maps(int((run/"gazebo.pid").read_text())))
     data["passed"] = (data["truth_isolation"] and (smoke or data["sole_setpoint_publisher"])
                       and data["extnav"]["status_single_publisher"]
