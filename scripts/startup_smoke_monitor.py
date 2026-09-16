@@ -10,6 +10,27 @@ from mavros_msgs.msg import EstimatorStatus, State, StatusText
 from mavros_msgs.srv import CommandLong, StreamRate
 from std_msgs.msg import String
 
+
+def service_event(kind, future, **metadata):
+    event = {'kind': kind, **metadata, 'completed': bool(future and future.done()),
+             'success': False}
+    if not event['completed']:
+        return event
+    try:
+        response = future.result()
+    except Exception as exc:
+        event['error'] = f'{type(exc).__name__}: {exc}'
+        return event
+    if response is None:
+        event['error'] = 'service completed without a response'
+        return event
+    # StreamRate has an empty response; completion without an exception is its acknowledgement.
+    event['success'] = bool(getattr(response, 'success', True))
+    if hasattr(response, 'result'):
+        event['result'] = int(response.result)
+    return event
+
+
 class Monitor(Node):
     def __init__(self):
         super().__init__('impact_startup_smoke_monitor')
@@ -44,8 +65,7 @@ def main():
     stream=n.request_streams()
     if stream is not None:
         rclpy.spin_until_future_complete(n, stream, timeout_sec=5.0)
-        service_events.append({'kind':'stream_request','completed':stream.done(),
-            'success':bool(stream.result().success) if stream.done() and stream.result() else False})
+        service_events.append(service_event('stream_request', stream))
     start=time.monotonic(); end=start+a.seconds; next_prearm=start
     pending=[]
     while time.monotonic()<end and rclpy.ok():
@@ -56,10 +76,7 @@ def main():
             next_prearm += 10.0
         rclpy.spin_once(n, timeout_sec=0.2)
     for elapsed,future in pending:
-        response=future.result() if future.done() else None
-        service_events.append({'kind':'prearm_check','elapsed_s':elapsed,
-            'completed':future.done(),'success':bool(response.success) if response else False,
-            'result':int(response.result) if response else None})
+        service_events.append(service_event('prearm_check', future, elapsed_s=elapsed))
     def metric(values):
         times=[x[0] for x in values]; span=(max(times)-min(times)) if len(times)>1 else 0
         return {'count':len(values),'rate_hz':(len(times)-1)/span if span else 0.0,

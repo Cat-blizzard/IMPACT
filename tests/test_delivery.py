@@ -7,6 +7,7 @@ import impact
 from impact_scenarios import scenario_geometry, generate
 from impact_runtime_audit import check_graph
 from impact_runtime_audit import check_extnav
+from startup_smoke_monitor import service_event
 
 
 def test_seed_changes_real_geometry_and_paired_arms_share_world(tmp_path):
@@ -73,6 +74,25 @@ def test_extnav_graph_checks_direction_and_unique_endpoints():
     assert result["output_publishers"][0]["gid"] == "aa"
     duplicate = status + status.replace("GID: aa", "GID: cc")
     assert not check_extnav(duplicate, output)["status_single_publisher"]
+
+
+def test_smoke_service_events_support_empty_and_command_responses():
+    class Future:
+        def __init__(self, response=None, error=None, done=True):
+            self.response, self.error, self.complete = response, error, done
+        def done(self):
+            return self.complete
+        def result(self):
+            if self.error:
+                raise self.error
+            return self.response
+    empty = type('StreamRateResponse', (), {})()
+    command = type('CommandLongResponse', (), {'success': False, 'result': 4})()
+    assert service_event('stream_request', Future(empty))['success']
+    assert service_event('prearm_check', Future(command))['result'] == 4
+    assert not service_event('prearm_check', Future(command))['success']
+    assert 'RuntimeError' in service_event('stream_request', Future(error=RuntimeError('failed')))['error']
+    assert not service_event('stream_request', Future(done=False))['completed']
 
 
 def test_busy_port_is_not_stolen(monkeypatch,tmp_path):
