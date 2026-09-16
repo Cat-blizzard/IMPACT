@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "scope": "Source regression and xq_autonomy package build; not full simulation or flight acceptance",
+  "base_commit": "20b3576d96b673c203bf157246517c8af97d1e87",
+  "created_utc": "2026-09-16T20:23:52.286Z",
+  "source_sha256_utf8_lf": {
+    "scripts/impact.py": "996b09c3774b5b9b03e64c4454a6a7dc33ef0fecf1833fcaac71e97fb4eee1d8",
+    "scripts/audit_stage_a_authorization.py": "322c014452616dc306df3070e3e1867fb72006cd11cb27f6cf1a2b0cebdc43ca",
+    "src/xq_autonomy/xq_autonomy/p4_mission_node.py": "6e8c7edddf0f4d3ac136b12b75c24bccbcb44238a621bc6edb5f957050d81ed9",
+    "src/xq_autonomy/xq_autonomy/sitl_arbiter_node.py": "c13accc4aec285d0aa696a668b7d5b15cb215e975b18691f12934da2d22a304a"
+  },
+  "tests": {
+    "passed": 335,
+    "failed": 0,
+    "new_since_previous_commit": 64,
+    "output_file": "pytest.txt"
+  },
+  "package_build": {
+    "package": "xq_autonomy",
+    "build_root": "/var/tmp/impact-review-20260917-hP3B3s",
+    "fresh_build": true,
+    "full_stack_build": false,
+    "dependency_overlay": "/var/tmp/impact-1001-41d578e11d/install",
+    "installed_module_checks": {
+      "p4_mission_node": {
+        "installed": "/var/tmp/impact-review-20260917-hP3B3s/install/xq_autonomy/lib/python3.10/site-packages/xq_autonomy/p4_mission_node.py",
+        "sha256": "dc43bffa4e966c8956c5ae3cbbfac9e09526128acac349284583ce62641bf60b",
+        "matches_source": true
+      },
+      "sitl_arbiter_node": {
+        "installed": "/var/tmp/impact-review-20260917-hP3B3s/install/xq_autonomy/lib/python3.10/site-packages/xq_autonomy/sitl_arbiter_node.py",
+        "sha256": "c13accc4aec285d0aa696a668b7d5b15cb215e975b18691f12934da2d22a304a",
+        "matches_source": true
+      }
+    }
+  },
+  "ros_contract": {
+    "passed": true,
+    "output": "PASS: real ROS messages, TF, matching IDs, frame rejection, revocation and old-session isolation"
+  },
+  "flight_validation": false,
+  "physical_stop_verified": false
+}

@@ -446,6 +446,37 @@ def summarize(root):
         note="First completed record per scenario/strategy/seed. All task failures retained; infrastructure retries separate. No frame-level significance tests."))
 
 
+def audit_stage_a_authorization(run):
+    """Decode the recorded commands using the run's installed ROS interfaces."""
+    output = run / "stage-a-authorization-audit.json"
+    script = ROOT / "scripts/audit_stage_a_authorization.py"
+    command = [sys.executable, str(script), str(run), "--output", str(output)]
+    manifest_path = run / "build-manifest.json"
+    if sys.platform.startswith("linux") and manifest_path.is_file():
+        install = Path(read_json(manifest_path).get("install_root", ""))
+        if (install / "setup.bash").is_file():
+            # Paths are positional arguments, never interpolated into shell code.
+            command = ["bash", "-c", 'set -e\nsource /opt/ros/humble/setup.bash\nsource "$1/setup.bash"\nexec python3 "$2" "$3" --output "$4"',
+                       "impact-authorization-audit", str(install), str(script), str(run), str(output)]
+    output.unlink(missing_ok=True)
+    result = subprocess.run(command, capture_output=True, text=True)
+    if output.is_file():
+        try:
+            report = read_json(output)
+            if report.get("status") == "FAIL":
+                return report
+            if report.get("status") == "PASS" and result.returncode == 0:
+                return report
+            if report.get("status") == "INCOMPLETE" and result.returncode in (0, 1):
+                return report
+        except (ValueError, AttributeError):
+            pass
+    report = dict(status="INCOMPLETE", checks={}, physical_stop_verified=False,
+        errors=["Authorization audit could not complete: " + result.stderr[-2000:]])
+    write_json(output, report)
+    return report
+
+
 def stage_a(args):
     """Run one independent Stage A goal-navigation task and write its gate record."""
     root = Path(args.results).resolve()
@@ -456,6 +487,7 @@ def stage_a(args):
                     "--output", str(map_audit_path)], check=True)
     mission = report.get("mission", {})
     evaluation = report.get("evaluation", {})
+    authorization_report = audit_stage_a_authorization(run)
     events = []
     event_file = run / "events.jsonl"
     if event_file.is_file():
@@ -478,13 +510,7 @@ def stage_a(args):
         "termination_confirmed": bool(mission.get("termination_confirmed")),
         "rosbag_metadata_present": (run / "rosbag" / "metadata.yaml").is_file(),
         "dataflash_present": any((run / "sitl_runtime" / "logs").glob("*.BIN")),
-        "certification_events_recorded": any(event.get("event") == "CERTIFY" for event in events),
-        "authorization_linkage_recorded": any(
-            event.get("event") == "CERTIFY" and "trajectory_id" in event and "accepted" in event
-            for event in events
-        ),
-        "revocation_behavior_recorded": any(event.get("event") == "REVOKE" for event in events) or
-            any(event.get("event") == "CERTIFY" and event.get("accepted") is False for event in events),
+        "authorized_command_execution_verified": authorization_report.get("status") == "PASS",
         "map_content_verified": (map_report.get("status") == "MAP_CONTENT_VERIFIED"
                                  and map_report.get("map_content_verified") is True),
         "completed_task": bool(report.get("completed_record")),
@@ -492,10 +518,15 @@ def stage_a(args):
     }
     failed_checks = [name for name, passed in checks.items() if not passed]
     gate_status = "PASS" if not failed_checks else "FAIL"
-    if failed_checks == ["map_content_verified"] and map_report.get("status") == "READY_FOR_REVIEW":
+    reviewable = set()
+    if map_report.get("status") == "READY_FOR_REVIEW":
+        reviewable.add("map_content_verified")
+    if authorization_report.get("status") == "INCOMPLETE":
+        reviewable.add("authorized_command_execution_verified")
+    if failed_checks and set(failed_checks) <= reviewable:
         gate_status = "REVIEW_REQUIRED"
     gate = {
-        "schema_version": 2,
+        "schema_version": 3,
         "gate": "STAGE_A_GOAL_NAVIGATION_ACCEPTANCE",
         "status": gate_status,
         "failed_checks": failed_checks,
@@ -507,6 +538,7 @@ def stage_a(args):
         "seed": args.seed,
         "checks": checks,
         "map_audit": map_report,
+        "authorization_audit": authorization_report,
         "event_evidence": {
             "count": len(events),
             "certify": sum(event.get("event") == "CERTIFY" for event in events),
@@ -515,7 +547,7 @@ def stage_a(args):
         },
         "task_result": mission.get("task_result", {"status": report.get("status")} ),
         "termination": mission.get("termination", {"confirmed": mission.get("termination_confirmed")} ),
-        "note": "Stage A target-navigation acceptance; never evidence for legacy P5 exploration or Stage B recovery benefit.",
+        "note": "Stage A target-navigation acceptance. Authorization audit verifies recorded command execution, not physical stopping distance. Never evidence for legacy P5 exploration or Stage B recovery benefit.",
     }
     write_json(run / "stage-a-validation.json", gate)
     summary_path = root / "stage-a-summary.json"

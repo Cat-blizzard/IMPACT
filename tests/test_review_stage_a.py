@@ -86,7 +86,7 @@ def test_evaluator_emits_actual_geometric_status(tmp_path, samples, collisions, 
     assert report["status"] == expected
 
 
-def test_actual_evaluator_output_reaches_map_review_without_schema_failure(tmp_path, monkeypatch):
+def test_actual_evaluator_output_still_requires_map_and_execution_evidence(tmp_path, monkeypatch):
     run = tmp_path / "normal-baseline-s1000"
     run.mkdir()
     recorded_bag(run)
@@ -103,7 +103,8 @@ def test_actual_evaluator_output_reaches_map_review_without_schema_failure(tmp_p
         strategy="baseline", seed=1000))
     gate = impact.read_json(run / "stage-a-validation.json")
     assert gate["checks"]["evaluation_pass"]
-    assert gate["failed_checks"] == ["map_content_verified"]
+    assert gate["failed_checks"] == ["authorized_command_execution_verified", "map_content_verified"]
+    assert gate["authorization_audit"]["status"] == "INCOMPLETE"
     assert gate["status"] == "REVIEW_REQUIRED" and result != 0
 
 
@@ -130,3 +131,49 @@ def test_unconfirmed_termination_cannot_be_completed_outcome():
         dict(status="PASS", task_success=True, termination_confirmed=False),
         dict(status="PASS", samples=100, collision_events=0))
     assert result == dict(status="FAIL", completed_record=False)
+
+
+@pytest.mark.parametrize("audit_status,expected", [("PASS", "REVIEW_REQUIRED"),
+    ("INCOMPLETE", "REVIEW_REQUIRED"), ("FAIL", "FAIL")])
+def test_stage_a_propagates_execution_violations_without_downgrading_to_review(tmp_path, monkeypatch, audit_status, expected):
+    run = tmp_path / "case"
+    run.mkdir()
+    recorded_bag(run)
+    (run / "sitl_runtime/logs").mkdir(parents=True)
+    (run / "sitl_runtime/logs/1.BIN").write_bytes(b"fixture")
+    # Event labels alone no longer satisfy authorization acceptance.
+    (run / "events.jsonl").write_text(json.dumps(dict(event="CERTIFY", trajectory_id=17, accepted=False)))
+    report = dict(status="PASS", completed_record=True,
+        mission=dict(gate="P16", task_success=True, termination_confirmed=True),
+        evaluation=dict(status="PASS", samples=100, collision_events=0))
+    monkeypatch.setattr(impact, "experiment", lambda args: (run, report))
+    monkeypatch.setattr(impact, "audit_stage_a_authorization", lambda path: dict(status=audit_status))
+    result = impact.stage_a(argparse.Namespace(results=str(tmp_path), scenario="normal", strategy="baseline", seed=1000))
+    gate = impact.read_json(run / "stage-a-validation.json")
+    assert gate["status"] == expected and result == 1
+    assert gate["checks"]["authorized_command_execution_verified"] is (audit_status == "PASS")
+
+
+@pytest.mark.parametrize("status", ["FAIL", "INCOMPLETE"])
+def test_audit_cli_nonzero_status_preserves_report(tmp_path, monkeypatch, status):
+    def execute(command, **kwargs):
+        impact.write_json(tmp_path / "stage-a-authorization-audit.json", dict(status=status, errors=["fixture"]))
+        return SimpleNamespace(returncode=1, stderr="")
+    monkeypatch.setattr(impact.subprocess, "run", execute)
+    assert impact.audit_stage_a_authorization(tmp_path)["status"] == status
+
+
+def test_failed_audit_process_cannot_reuse_previous_pass(tmp_path, monkeypatch):
+    impact.write_json(tmp_path / "stage-a-authorization-audit.json", dict(status="PASS"))
+    monkeypatch.setattr(impact.subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=2, stderr="decode failed"))
+    result = impact.audit_stage_a_authorization(tmp_path)
+    assert result["status"] == "INCOMPLETE" and "decode failed" in result["errors"][0]
+
+
+@pytest.mark.parametrize("status,returncode,expected", [("PASS", 1, "INCOMPLETE"), ("FAIL", 2, "FAIL")])
+def test_audit_process_exit_must_agree_with_pass(tmp_path, monkeypatch, status, returncode, expected):
+    def execute(command, **kwargs):
+        impact.write_json(tmp_path / "stage-a-authorization-audit.json", dict(status=status))
+        return SimpleNamespace(returncode=returncode, stderr="unexpected exit")
+    monkeypatch.setattr(impact.subprocess, "run", execute)
+    assert impact.audit_stage_a_authorization(tmp_path)["status"] == expected

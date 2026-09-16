@@ -180,3 +180,184 @@ def test_clock_reset_discards_old_brake_regardless_of_callback_order(arbiter, fi
     node.odometry(odometry_at(-5., .5))
     node.tick()
     assert publications[-1].pose.position.x == pytest.approx(-5.)
+
+
+def tracking_inputs(node, now, *, expires=10.3):
+    from quadrotor_msgs.msg import PositionCommand
+    from xq_sim_interfaces.msg import TrajectoryAuthorization
+    from xq_autonomy.sitl_supervisor_node import ros_stamp
+    node.odometry(odometry_at(0., now[0]))
+    command = PositionCommand()
+    command.header.frame_id = "xq_lio_map"
+    command.header.stamp = ros_stamp(now[0])
+    command.trajectory_id = 7
+    command.position.x, command.position.z, command.yaw = .2, 2., .1
+    node.position_command(command)
+    auth = TrajectoryAuthorization()
+    auth.header.frame_id = "xq_lio_map"
+    auth.header.stamp = ros_stamp(now[0])
+    auth.session_id = node.guard.session
+    auth.request_id, auth.trajectory_id = 4, 7
+    auth.valid_until = ros_stamp(expires)
+    auth.authorized = True
+    node.authorization(auth)
+    return command, auth
+
+
+def test_execution_telemetry_links_exact_final_setpoint_and_received_authorization(arbiter):
+    node, now, publications, statuses = arbiter
+    command, auth = tracking_inputs(node, now)
+    node.tick()
+    status = json.loads(statuses[-1].data)
+    assert status["schema_version"] == 2
+    assert status["mode"] == "TRACK" and status["authorized"]
+    execution = status["execution"]
+    final = publications[-1]
+    assert execution["emitted"] and execution["frame_id"] == final.header.frame_id == "map"
+    assert execution["setpoint_stamp_ns"] == final.header.stamp.sec * 10**9 + final.header.stamp.nanosec
+    assert execution["position"] == pytest.approx([final.pose.position.x, final.pose.position.y, final.pose.position.z])
+    assert execution["command_position"] == pytest.approx([.2, 0., 2.])
+    assert execution["command_yaw"] == pytest.approx(command.yaw)
+    assert execution["trajectory_id"] == command.trajectory_id
+    assert execution["request_id"] == auth.request_id
+    assert execution["command_stamp"] == 10.
+    assert execution["authorization_issued"] == 10.
+    assert execution["authorization_expires"] == pytest.approx(10.3)
+    assert status["authorization"]["accepted"] is True
+    assert status["authorization"]["received_sim_time"] == 10.
+
+
+def test_expired_authorization_reports_false_and_brakes_old_command(arbiter):
+    node, now, publications, statuses = arbiter
+    tracking_inputs(node, now)
+    node.tick()
+    now[0] = 10.31
+    node.odometry(odometry_at(0., now[0]))
+    node.tick()
+    status = json.loads(statuses[-1].data)
+    assert node.guard.current is not None  # retained history is not active authority
+    assert status["mode"] == "BRAKE" and status["authorized"] is False
+    assert status["execution"]["emitted"]
+    assert status["execution"]["trajectory_id"] is None
+    assert publications[-1].pose.position.x == pytest.approx(0.)
+
+
+def test_revocation_receipt_is_recorded_and_cannot_execute_old_target(arbiter):
+    from xq_autonomy.sitl_supervisor_node import ros_stamp
+    node, now, publications, statuses = arbiter
+    _, auth = tracking_inputs(node, now)
+    node.tick()
+    now[0] = 10.1
+    node.odometry(odometry_at(0., now[0]))
+    auth.header.stamp = auth.valid_until = ros_stamp(now[0])
+    auth.authorized = False
+    node.authorization(auth)
+    node.tick()
+    status = json.loads(statuses[-1].data)
+    assert status["mode"] == "BRAKE" and not status["authorized"]
+    assert status["authorization"]["accepted"] is False
+    assert status["authorization"]["received_sim_time"] == pytest.approx(10.1)
+    assert status["execution"]["request_id"] is None
+    assert publications[-1].pose.position.x == pytest.approx(0.)
+
+
+@pytest.mark.parametrize("stale_input", ["odom", "stage", "auth"])
+def test_stale_inputs_do_not_report_active_authority(arbiter, stale_input):
+    node, now, _, statuses = arbiter
+    tracking_inputs(node, now)
+    setattr(node, stale_input + "_wall", time.monotonic() - 1.)
+    node.tick()
+    status = json.loads(statuses[-1].data)
+    assert not status["authorized"] and status["mode"] != "TRACK"
+
+
+def test_failed_transform_cannot_claim_setpoint_was_emitted(arbiter):
+    node, now, publications, statuses = arbiter
+    tracking_inputs(node, now)
+    def invalid_transform(_):
+        raise ValueError("invalid transform")
+    node.transform = invalid_transform
+    node.tick()
+    status = json.loads(statuses[-1].data)
+    assert not publications and status["mode"] == "TF_FAILURE"
+    assert status["execution"] == {"emitted": False}
+
+
+def test_inactive_phase_has_no_claim_of_authorized_execution(arbiter):
+    node, now, publications, statuses = arbiter
+    tracking_inputs(node, now)
+    node.phase = "DESCEND"
+    node.tick()
+    status = json.loads(statuses[-1].data)
+    assert not publications and not status["authorized"]
+    assert status["execution"] == {"emitted": False}
+
+
+def test_same_sim_tick_revocation_has_unambiguous_local_order(arbiter):
+    node, now, publications, statuses = arbiter
+    _, auth = tracking_inputs(node, now)
+    node.tick()
+    before = json.loads(statuses[-1].data)
+    auth.authorized = False
+    node.authorization(auth)
+    node.tick()
+    after = json.loads(statuses[-1].data)
+    assert before["sim_time"] == after["sim_time"]
+    assert before["mode"] == "TRACK" and after["mode"] == "BRAKE"
+    assert before["decision_sequence"] < after["authorization"]["receipt_sequence"] < after["decision_sequence"]
+    assert before["authorization"]["receipt_sequence"] < before["decision_sequence"]
+    assert all(0 <= age < .5 for age in before["input_age_wall"].values())
+
+
+def test_real_arbiter_callbacks_produce_auditable_track_revoke_and_expiry(arbiter):
+    from traj_utils.msg import Bspline
+    from xq_autonomy.sitl_supervisor_node import ros_stamp
+    from audit_stage_a_authorization import (AUTH, STATUS, COMMAND, OUTPUT, SPLINE,
+                                             audit_records, normalize)
+    node, now, publications, statuses = arbiter
+    records = []
+    def record(topic, message):
+        records.append(dict(topic=topic, message=normalize(topic, message), recorded_ns=len(records)))
+    def tick():
+        previous = len(publications)
+        node.tick()
+        record(STATUS, statuses[-1])
+        for message in publications[previous:]:
+            record(OUTPUT, message)
+    command, auth = tracking_inputs(node, now)
+    spline = Bspline()
+    spline.traj_id = command.trajectory_id
+    record(AUTH, auth)
+    record(COMMAND, command)
+    record(SPLINE, spline)
+    tick()
+    now[0] = 10.1
+    node.odometry(odometry_at(0., now[0]))
+    auth.authorized = False
+    auth.header.stamp = auth.valid_until = ros_stamp(now[0])
+    node.authorization(auth)
+    record(AUTH, auth)
+    tick()
+    now[0] = 10.2
+    node.odometry(odometry_at(0., now[0]))
+    command.header.stamp = ros_stamp(now[0])
+    command.trajectory_id = 8
+    node.position_command(command)
+    auth.header.stamp = ros_stamp(now[0])
+    auth.request_id, auth.trajectory_id = 5, 8
+    auth.valid_until = ros_stamp(10.4)
+    auth.authorized = True
+    node.authorization(auth)
+    spline.traj_id = 8
+    record(AUTH, auth)
+    record(COMMAND, command)
+    record(SPLINE, spline)
+    tick()
+    now[0] = 10.41
+    node.odometry(odometry_at(0., now[0]))
+    tick()
+    report = audit_records(records, node.guard.session)
+    assert report["status"] == "PASS", report
+    assert report["checks"]["revocation_output_observed"]
+    assert report["checks"]["expiration_output_observed"]
+    assert not report["physical_stop_verified"]

@@ -216,3 +216,81 @@ def test_disarm_at_deadline_preserves_confirmed_termination(p4):
     assert result["termination"]["confirmed"]
     assert result["termination"]["reason"] == "FCU disarmed at termination deadline"
     assert result["events"][-2]["kind"] == "TERMINATION_CONFIRMED"
+
+
+@pytest.mark.parametrize("task_failed", [False, True])
+def test_descent_waits_past_60_seconds_and_confirms_disarm_within_budget(p4, task_failed):
+    node, clock = p4
+    node.completed_waypoints = [{"index": index} for index in range(1, 5)]
+    if task_failed:
+        node._failure_to_land("mission timeout")
+    else:
+        node._transition("LAND", "rectangle and return completed")
+    clock[0] += 2.0
+    node._transition("DESCEND", "landing accepted")
+    node.fcu_state.mode = "LAND"
+    clock[0] += 61.0
+    node.fcu_state_last_wall = clock[0]
+    node._tick()
+    assert not node.finalized and not node.result_path.exists()
+    assert node.termination_started == 100.0
+
+    clock[0] = 189.0  # 89 seconds of the shared 90-second budget.
+    node.fcu_state_last_wall = clock[0]
+    node.fcu_state.armed = False
+    node._tick()
+    result = json.loads(node.result_path.read_text())
+    assert result["status"] == ("FAIL" if task_failed else "PASS")
+    assert result["termination"]["confirmed"]
+    assert result["task_result"]["success"] is (not task_failed)
+    if task_failed:
+        assert result["task_result"]["failure_reason"] == "mission timeout"
+
+
+def test_descent_honors_configured_termination_budget(p4):
+    node, clock = p4
+    original_parameter = node.get_parameter
+    node.get_parameter = lambda name: (SimpleNamespace(value=120.0)
+        if name == "failsafe_termination_timeout_s" else original_parameter(name))
+    node._failure_to_land("flight health lost")
+    node._transition("DESCEND", "landing accepted")
+    clock[0] += 91.0
+    node.fcu_state_last_wall = clock[0]
+    node._tick()
+    assert not node.finalized and not node.result_path.exists()
+    clock[0] = 221.0
+    node.fcu_state_last_wall = clock[0]
+    node._tick()
+    result = json.loads(node.result_path.read_text())
+    assert result["status"] == "FAIL" and not result["termination"]["confirmed"]
+    assert result["termination"]["reason"] == "FCU termination not confirmed before timeout"
+
+
+def test_recovered_communication_keeps_first_termination_deadline_through_descent(p4):
+    node, clock = p4
+    node.fcu_state_last_wall = clock[0] - 10.0
+    node._failure_to_land("FCU state lost")
+    assert node.phase == "FAILSAFE_WAIT"
+
+    clock[0] = 120.0
+    node.fcu_state_last_wall = clock[0]
+    node._tick()
+    assert node.phase == "LAND"
+    clock[0] = 122.0
+    node._poll_command = lambda: node._transition("DESCEND", "landing accepted")
+    node._tick()
+    node._poll_command = lambda: None
+    assert node.phase == "DESCEND" and node.termination_started == 100.0
+
+    clock[0] = 189.0  # DESCEND has run 67 seconds; the overall budget still has 1 second.
+    node.fcu_state_last_wall = clock[0]
+    node._tick()
+    assert not node.finalized and not node.result_path.exists()
+    clock[0] = 191.0
+    node.fcu_state_last_wall = clock[0]
+    node._tick()
+    result = json.loads(node.result_path.read_text())
+    assert result["status"] == "FAIL"
+    assert not result["termination"]["confirmed"]
+    assert result["termination"]["reason"] == "FCU termination not confirmed before timeout"
+    assert result["task_result"]["failure_reason"] == "FCU state lost"

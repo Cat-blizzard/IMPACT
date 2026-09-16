@@ -25,6 +25,8 @@ class SITLArbiter(Node):
         self.odom = self.command = self.hold = None
         self.odom_wall = self.command_wall = self.stage_wall = self.auth_wall = 0.
         self.phase = "WAIT_FCU"
+        self.last_authorization_receipt = None
+        self.event_sequence = 0
         self.brake_state = None
         self.reset_cleanup_generation = 0
         self.buffer = Buffer()
@@ -63,8 +65,14 @@ class SITLArbiter(Node):
             return
         auth = Authorization(msg.session_id, msg.request_id, msg.trajectory_id,
             stamp_s(msg.header.stamp), stamp_s(msg.valid_until), msg.authorized)
-        if self.guard.update(auth, self.get_clock().now().nanoseconds / 1e9):
+        now = self.get_clock().now().nanoseconds / 1e9
+        if self.guard.update(auth, now):
+            self.event_sequence += 1
             self.auth_wall = time.monotonic()
+            self.last_authorization_receipt = dict(session_id=auth.session,
+                request_id=auth.request, trajectory_id=auth.trajectory,
+                issued=auth.issued, expires=auth.expires, accepted=auth.accepted,
+                received_sim_time=now, receipt_sequence=self.event_sequence)
 
     def transform(self, point):
         # Actual TF application; never relabel coordinates as a transform.
@@ -82,6 +90,8 @@ class SITLArbiter(Node):
         return point + 2*np.cross(u, np.cross(u, point)+w*point) + xyz(transform.transform.translation)
 
     def tick(self):
+        self.event_sequence += 1
+        decision_sequence = self.event_sequence
         now = self.get_clock().now().nanoseconds / 1e9
         self.guard.clock(now)
         if self.guard.reset_latched and self.reset_cleanup_generation != self.guard.reset_generation:
@@ -91,6 +101,7 @@ class SITLArbiter(Node):
             self.command = self.odom = self.hold = self.brake_state = None
             self.odom_wall = self.command_wall = self.auth_wall = 0.
             self.reset_cleanup_generation = self.guard.reset_generation
+            self.last_authorization_receipt = None
         wall = time.monotonic()
         if not self.odom:
             return
@@ -98,6 +109,12 @@ class SITLArbiter(Node):
         fresh = (wall-self.odom_wall < 0.5 and 0 <= now-stamp_s(self.odom.header.stamp) <= 0.5)
         phase_fresh = wall-self.stage_wall < 0.5
         mode, target, yaw = "INACTIVE", None, 0.
+        lease = self.guard.current
+        authorized = bool(lease and lease.accepted
+            and lease.issued <= now < lease.expires
+            and 0 <= wall-self.auth_wall < 0.5 and not self.guard.reset_latched
+            and self.phase == "ACTIVE" and phase_fresh and fresh)
+        execution = dict(emitted=False)
         # Takeoff and landing belong to FCU submodes: no competing position targets.
         if self.phase in ("ACTIVE", "HOVER"):
             cmd = self.command
@@ -132,11 +149,34 @@ class SITLArbiter(Node):
                 message.pose.orientation.z = math.sin(yaw/2)
                 message.pose.orientation.w = math.cos(yaw/2)
                 self.pub.publish(message)
+                # Bind this decision to the exact final MAVROS publication.
+                # Receipt timing and command provenance are recorded separately
+                # from the ROS bag writer's cross-topic arrival order.
+                tracking = mode == "TRACK"
+                execution = dict(emitted=True,
+                    setpoint_stamp_ns=int(message.header.stamp.sec)*1000000000
+                        + int(message.header.stamp.nanosec),
+                    frame_id=message.header.frame_id, position=target.tolist(), yaw=float(yaw),
+                    trajectory_id=int(cmd.trajectory_id) if tracking else None,
+                    request_id=lease.request if tracking else None,
+                    command_stamp=stamp_s(cmd.header.stamp) if tracking else None,
+                    command_position=xyz(cmd.position).tolist() if tracking else None,
+                    command_yaw=float(cmd.yaw) if tracking else None,
+                    authorization_issued=lease.issued if tracking else None,
+                    authorization_expires=lease.expires if tracking else None)
             except (TransformException, ValueError):
                 mode = "TF_FAILURE"
-        self.status_pub.publish(String(data=json.dumps(dict(session_id=self.guard.session,
-            sim_time=now, mode=mode, fresh_odom=fresh, reset=self.guard.reset_latched,
-            authorized=bool(self.guard.current), ground_truth_subscribed=False))))
+        self.status_pub.publish(String(data=json.dumps(dict(schema_version=2,
+            session_id=self.guard.session, sim_time=now, mode=mode,
+            decision_sequence=decision_sequence,
+            input_age_wall=dict(authorization=wall-self.auth_wall, command=wall-self.command_wall,
+                stage=wall-self.stage_wall, odom=wall-self.odom_wall),
+            phase=self.phase, phase_fresh=phase_fresh, fresh_odom=fresh,
+            reset=self.guard.reset_latched, authorized=authorized,
+            authorization=self.last_authorization_receipt, execution=execution,
+            measured_position=measured.tolist(),
+            measured_velocity=xyz(self.odom.twist.twist.linear).tolist(),
+            odom_stamp=stamp_s(self.odom.header.stamp), ground_truth_subscribed=False))))
 
 
 def main(args=None):

@@ -883,8 +883,6 @@ class P4MissionNode(Node):
                 status = "FAIL" if self.task_failure_reason else "PASS"
                 reason = self.task_failure_reason or "GPS-off LIO ExternalNav takeoff-hover-rectangle-return-land completed"
                 self._finish(status, reason)
-            elif now - self.phase_started > 60.0:
-                self._finish("FAIL", "landing/disarm not confirmed")
 
 
 def main(args=None) -> None:
