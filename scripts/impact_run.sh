@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 run="$1"
 profile="$2"
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -194,7 +194,11 @@ graph_probe /xq/eval/p5/ground_truth "$run/truth-graph.txt"
 graph_probe /uav1/mavros/setpoint_position/local "$run/setpoint-graph.txt"
 graph_probe /xq/p4/extnav/status "$run/extnav-status-graph.txt"
 graph_probe /uav1/mavros/odometry/out "$run/extnav-output-graph.txt"
-graph_probe /uav1/mavros/odometry/in "$run/mavros-odometry-in-graph.txt"
+graph_probe /uav1/mavros/state "$run/mavros-state-graph.txt"
+timeout 15 ros2 node list --no-daemon >"$run/ros-nodes-prearm.txt" 2>&1
+printf '%s\n' "$(date -Is)" >"$run/ros-nodes-prearm-collected-at.txt"
+timeout 15 ros2 service list --no-daemon -t >"$run/ros-services-prearm.txt" 2>&1
+printf '%s\n' "$(date -Is)" >"$run/ros-services-prearm-collected-at.txt"
 audit_args=("$run" "$profile")
 [[ "${IMPACT_SMOKE_ONLY:-0}" == 1 ]] && audit_args+=(--smoke)
 python3 "$root/scripts/impact_runtime_audit.py" "${audit_args[@]}"

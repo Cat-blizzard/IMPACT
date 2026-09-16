@@ -76,7 +76,7 @@ def test_extnav_graph_checks_direction_and_unique_endpoints():
     assert not check_extnav(duplicate, output)["status_single_publisher"]
 
 
-def test_extnav_graph_resolves_unknown_mavros_endpoint_only_by_participant_gid():
+def test_extnav_graph_resolves_unknown_mavros_endpoint_only_with_full_identity():
     status = ("Publisher count: 1\nNode name: xq_p4_external_nav\n"
               "Endpoint type: PUBLISHER\nGID: aa\n")
     output = ("Publisher count: 1\nNode name: xq_p4_external_nav\n"
@@ -84,16 +84,21 @@ def test_extnav_graph_resolves_unknown_mavros_endpoint_only_by_participant_gid()
               "Subscription count: 1\nNode name: _NODE_NAME_UNKNOWN_\n"
               "Node namespace: _NODE_NAMESPACE_UNKNOWN_\nEndpoint type: SUBSCRIPTION\n"
               "GID: 01.02.03.04.05.06.07.08.00.00.01.04\n")
-    identity = ("Publisher count: 1\nNode name: odometry\n"
+    identity = ("Publisher count: 1\nNode name: sys_status\n"
                 "Node namespace: /uav1/mavros\nEndpoint type: PUBLISHER\n"
                 "GID: 01.02.03.04.05.06.07.08.00.00.02.03\n")
-    result = check_extnav(status, output, identity)
+    result = check_extnav(status, output, identity, True, True)
     assert result["mavros_output_subscription"]
     assert result["output_subscribers"][0]["identity_resolution"] == (
-        "participant_gid_from_odometry_in")
+        "participant_gid_from_mavros_state")
+
+    assert not check_extnav(status, output, identity, True, False)[
+        "mavros_output_subscription"]
+    assert not check_extnav(status, output, identity, False, True)[
+        "mavros_output_subscription"]
 
     mismatched = identity.replace("01.02.03.04.05.06.07.08", "11.12.13.14.15.16.17.18")
-    result = check_extnav(status, output, mismatched)
+    result = check_extnav(status, output, mismatched, True, True)
     assert not result["mavros_output_subscription"]
     assert result["output_subscribers"][0]["resolved_node"] == "_NODE_NAME_UNKNOWN_"
 

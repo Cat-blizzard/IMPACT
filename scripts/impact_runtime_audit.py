@@ -41,7 +41,8 @@ def check_graph(truth, setpoint, require_evaluator=True, recorder_participants=(
         sole_setpoint_publisher=bool(count and count[1] == "1" and owner))
 
 
-def check_extnav(status_text, output_text, mavros_identity_text=""):
+def check_extnav(status_text, output_text, mavros_identity_text="",
+                 odometry_node_present=False, odometry_service_present=False):
     """Reject duplicate/stale ExternalNav adapters before arming."""
     status_publishers = _endpoints(status_text, "PUBLISHER")
     output_publishers = _endpoints(output_text, "PUBLISHER")
@@ -49,7 +50,7 @@ def check_extnav(status_text, output_text, mavros_identity_text=""):
     identity_publishers = _endpoints(mavros_identity_text, "PUBLISHER")
     mavros_participants = {
         item["participant_gid"] for item in identity_publishers
-        if item.get("node") == "odometry"
+        if item.get("node") == "sys_status"
         and item.get("namespace") == "/uav1/mavros"
         and item.get("participant_gid")
     }
@@ -60,9 +61,9 @@ def check_extnav(status_text, output_text, mavros_identity_text=""):
         resolution = "reported"
         if (resolved_node == "_NODE_NAME_UNKNOWN_"
                 and item.get("participant_gid") in mavros_participants):
-            resolved_node = "odometry"
+            resolved_node = "mavros_process@gid"
             resolved_namespace = "/uav1/mavros"
-            resolution = "participant_gid_from_odometry_in"
+            resolution = "participant_gid_from_mavros_state"
         resolved_subscribers.append({
             **item,
             "resolved_node": resolved_node,
@@ -78,9 +79,13 @@ def check_extnav(status_text, output_text, mavros_identity_text=""):
                 output_subscribers=resolved_subscribers,
                 mavros_identity_publishers=identity_publishers,
                 mavros_identity_participant_gids=sorted(mavros_participants),
+                odometry_node_present=odometry_node_present,
+                odometry_service_present=odometry_service_present,
                 mavros_output_subscription=any(
-                    x.get("resolved_namespace") == "/uav1/mavros"
-                    and x.get("resolved_node") == "odometry"
+                    (x.get("namespace") == "/uav1/mavros" and x.get("node") == "odometry")
+                    or (x.get("resolved_namespace") == "/uav1/mavros"
+                        and x.get("resolved_node") == "mavros_process@gid"
+                        and odometry_node_present and odometry_service_present)
                     for x in resolved_subscribers))
 
 
@@ -108,11 +113,15 @@ def main():
     smoke = "--smoke" in sys.argv
     status_graph = run/"extnav-status-graph.txt"
     output_graph = run/"extnav-output-graph.txt"
-    identity_graph = run/"mavros-odometry-in-graph.txt"
+    identity_graph = run/"mavros-state-graph.txt"
+    nodes = (run/"ros-nodes-prearm.txt").read_text().splitlines()
+    services = (run/"ros-services-prearm.txt").read_text().splitlines()
     extnav = check_extnav(
         status_graph.read_text() if status_graph.exists() else "",
         output_graph.read_text() if output_graph.exists() else "",
         identity_graph.read_text() if identity_graph.exists() else "",
+        "/uav1/mavros/odometry" in nodes,
+        any(line.startswith("/uav1/mavros/odometry/") for line in services),
     )
     recorder_participants = {x["participant_gid"] for x in extnav["output_subscribers"]
                              if x["node"].startswith("rosbag2_recorder")}
