@@ -62,6 +62,22 @@ case "${run_dir}" in
 esac
 [[ ! -e "${run_dir}" ]] || { echo "Refusing to reuse run directory: ${run_dir}" >&2; exit 2; }
 mkdir -p -- "${run_dir}/ros_logs" "${run_dir}/sitl_runtime"
+phase="setup"
+failure_trap() {
+  local rc="$1" line="$2" command="$3"
+  if [[ ! -e "${run_dir}/first-failure.json" ]]; then
+    python3 - "${run_dir}/first-failure.json" "${phase}" "${line}" "${command}" "${rc}" <<'PY'
+import datetime,json,pathlib,sys
+path,phase,line,command,code=sys.argv[1:]
+pathlib.Path(path).write_text(json.dumps({"phase":phase,"line":int(line),
+    "command":command,"exit_code":int(code),
+    "recorded_at_utc":datetime.datetime.now(datetime.timezone.utc).isoformat()},
+    ensure_ascii=False,indent=2)+"\n")
+PY
+  fi
+  return "${rc}"
+}
+trap 'failure_trap "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
 unset AMENT_PREFIX_PATH CMAKE_PREFIX_PATH COLCON_PREFIX_PATH PYTHONPATH LD_LIBRARY_PATH
 unset GZ_SIM_RESOURCE_PATH IGN_GAZEBO_RESOURCE_PATH SDF_PATH
@@ -72,6 +88,7 @@ source "${install_root}/setup.bash"
 set -u
 
 # Refuse stale/wrong installations before starting SITL, Gazebo or any task.
+phase="verify_runtime_build"
 python3 "${script_dir}/verify_runtime_build.py" --install "${install_root}" \
   --manifest "${build_manifest}" --output "${run_dir}/runtime-build-verification.json"
 
@@ -85,6 +102,13 @@ if [[ "$profile" == local_cpu ]]; then
   export EGL_PLATFORM=surfaceless QT_QPA_PLATFORM=offscreen
 else
   export MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
+fi
+phase="verify_renderer"
+timeout 10 glxinfo -B >"${run_dir}/renderer.txt" 2>&1 || {
+  echo "Unable to record the configured renderer." >&2; exit 2;
+}
+if [[ "$profile" == local_cpu ]] && ! grep -Eiq 'llvmpipe|software rasterizer' "${run_dir}/renderer.txt"; then
+  echo "local_cpu did not resolve a software renderer." >&2; exit 2
 fi
 export GZ_SIM_RESOURCE_PATH="${install_root}/xq_gz_assets/share/xq_gz_assets/models:${plugin_root}/models:${plugin_root}/worlds"
 export IGN_GAZEBO_RESOURCE_PATH="${GZ_SIM_RESOURCE_PATH}"
@@ -141,6 +165,8 @@ bash "${script_dir}/audit_external_assets.sh" snapshot "${before_audit}" >/dev/n
 declare -a pids=()
 declare -a labels=()
 cleanup_done=false
+stop_done=false
+stop_status=0
 
 start_group() {
   local label="$1" log_file="$2"
@@ -159,36 +185,89 @@ start_group() {
 }
 
 stop_groups() {
-  local index pid pgid round
-  for ((index=${#pids[@]}-1; index>=0; index--)); do
+  [[ "${stop_done}" == false ]] || return "${stop_status}"
+  stop_done=true
+  local index pid round wait_status residual forced_kill
+  local -a initial_alive=() signals=() forced_kills=()
+  group_running() {
+    ps -eo pgid=,stat= | awk -v group="$1" '$1 == group && $2 !~ /^Z/ {found=1} END {exit !found}'
+  }
+  record_group() {
+    local group="$1" label="$2" stage="$3"
+    ps -eo pid=,ppid=,pgid=,sid=,stat=,etimes=,cmd= | awk \
+      -v group="$group" -v label="$label" -v stage="$stage" \
+      'BEGIN {OFS="\t"} $3 == group {print stage,label,$0}' \
+      >>"${run_dir}/cleanup-process-groups.tsv"
+  }
+  date -Is >"${run_dir}/cleanup-started-at.txt"
+  printf 'phase=%s\n' "${phase}" >>"${run_dir}/cleanup-started-at.txt"
+  : >"${run_dir}/cleanup-processes.jsonl"
+  printf 'stage\tlabel\tpid\tppid\tpgid\tsid\tstat\tetimes\tcmd\n' \
+    >"${run_dir}/cleanup-process-groups.tsv"
+  for index in "${!pids[@]}"; do
     pid="${pids[index]}"
-    pgid="$(ps -o pgid= -p "${pid}" 2>/dev/null | tr -d '[:space:]' || true)"
-    if [[ "${pgid}" == "${pid}" ]]; then
-      if [[ "${labels[index]}" == gazebo ]]; then kill -TERM -- "-${pgid}" 2>/dev/null || true
-      else kill -INT -- "-${pgid}" 2>/dev/null || true; fi
+    if group_running "${pid}"; then initial_alive+=(true); else initial_alive+=(false); fi
+    if [[ "${labels[index]}" == sitl || "${labels[index]}" == gazebo ]]; then
+      signals+=(TERM)
+    else
+      signals+=(INT)
+    fi
+    forced_kills+=(false)
+  done
+  # SITL checks its termination flag in the main loop. Keep Gazebo serving the
+  # JSON backend while SITL exits, then stop the remaining groups once.
+  for index in "${!pids[@]}"; do
+    [[ "${labels[index]}" == sitl && "${initial_alive[index]}" == true ]] || continue
+    kill -TERM -- "-${pids[index]}" 2>/dev/null || true
+    for _ in {1..10}; do group_running "${pids[index]}" || break; sleep 0.5; done
+  done
+  for index in "${!pids[@]}"; do
+    [[ "${labels[index]}" != sitl && "${initial_alive[index]}" == true ]] || continue
+    kill -"${signals[index]}" -- "-${pids[index]}" 2>/dev/null || true
+  done
+  for round in {1..20}; do
+    local alive=false
+    for pid in "${pids[@]}"; do group_running "${pid}" && alive=true; done
+    [[ "${alive}" == false ]] && break
+    sleep 0.5
+  done
+  for index in "${!pids[@]}"; do
+    pid="${pids[index]}"
+    if group_running "${pid}"; then
+      record_group "${pid}" "${labels[index]}" before_term
+      kill -TERM -- "-${pid}" 2>/dev/null || true
     fi
   done
-  for round in 1 2 3 4 5 6 7 8 9 10; do
-    local alive=false
-    for pid in "${pids[@]}"; do kill -0 "${pid}" 2>/dev/null && alive=true; done
-    [[ "${alive}" == false ]] && break
-    sleep 1
+  sleep 2
+  for index in "${!pids[@]}"; do
+    pid="${pids[index]}"
+    if group_running "${pid}"; then
+      forced_kills[index]=true
+      record_group "${pid}" "${labels[index]}" before_kill
+      kill -KILL -- "-${pid}" 2>/dev/null || true
+    fi
+    wait "${pid}" 2>/dev/null
+    wait_status=$?
+    for _ in {1..10}; do group_running "${pid}" || break; sleep 0.5; done
+    residual=false
+    if group_running "${pid}"; then
+      residual=true
+      record_group "${pid}" "${labels[index]}" residual
+    fi
+    forced_kill="${forced_kills[index]}"
+    python3 - "${labels[index]}" "${pid}" "${initial_alive[index]}" \
+      "${signals[index]}" "${wait_status}" "${forced_kill}" "${residual}" \
+      >>"${run_dir}/cleanup-processes.jsonl" <<'PY'
+import json,sys
+label,pid,initial,signal,status,forced,residual=sys.argv[1:]
+print(json.dumps({'label':label,'pid':int(pid),'initial_alive':initial=='true',
+ 'signal':signal,'wait_status':int(status),'forced_kill':forced=='true',
+ 'residual':residual=='true'},separators=(',',':')))
+PY
+    if [[ "${residual}" == true || "${forced_kill}" == true ]]; then stop_status=12; fi
+    case "${wait_status}" in 0|130|143) ;; *) stop_status=12 ;; esac
   done
-  for pid in "${pids[@]}"; do
-    pgid="$(ps -o pgid= -p "${pid}" 2>/dev/null | tr -d '[:space:]' || true)"
-    [[ "${pgid}" == "${pid}" ]] && kill -TERM -- "-${pgid}" 2>/dev/null || true
-  done
-  for round in 1 2 3 4 5; do
-    local alive=false
-    for pid in "${pids[@]}"; do kill -0 "${pid}" 2>/dev/null && alive=true; done
-    [[ "${alive}" == false ]] && break
-    sleep 1
-  done
-  for pid in "${pids[@]}"; do
-    pgid="$(ps -o pgid= -p "${pid}" 2>/dev/null | tr -d '[:space:]' || true)"
-    [[ "${pgid}" == "${pid}" ]] && kill -KILL -- "-${pgid}" 2>/dev/null || true
-  done
-  for pid in "${pids[@]}"; do wait "${pid}" 2>/dev/null || true; done
+  return "${stop_status}"
 }
 
 finish_audit() {
@@ -209,12 +288,18 @@ inventory_dataflash() {
 
 cleanup() {
   local status=$?
-  trap - EXIT INT TERM
+  if ((status != 0)) && [[ ! -e "${run_dir}/first-failure.json" ]]; then
+    set +e
+    failure_trap "${status}" "0" "explicit exit or signal in phase ${phase}"
+  fi
+  trap - EXIT INT TERM ERR
   set +e
   stop_groups
+  local process_status=$?
   finish_audit
   local audit_status=$?
   inventory_dataflash
+  ((process_status == 0)) || status="${process_status}"
   ((audit_status == 0)) || status="${audit_status}"
   exit "${status}"
 }
@@ -233,6 +318,12 @@ wait_log() {
   return 1
 }
 
+graph_probe() {
+  local topic="$1" output="$2"
+  timeout 15 ros2 topic info --no-daemon "${topic}" -v >"${output}" 2>&1
+  date -Is >"${output%.txt}-collected-at.txt"
+}
+
 assert_core_alive() {
   local index
   for index in 0 1 2 3 4; do
@@ -244,6 +335,7 @@ assert_core_alive() {
 }
 
 pushd "${run_dir}/sitl_runtime" >/dev/null
+phase="start_sitl"
 start_group sitl "${run_dir}/sitl.log" \
   "${ardupilot_root}/build/sitl/bin/arducopter" \
   -S --model JSON --speedup 1 --slave 0 --wipe \
@@ -252,12 +344,14 @@ start_group sitl "${run_dir}/sitl.log" \
 popd >/dev/null
 wait_log "${run_dir}/sitl.log" "SERIAL0 on TCP port 5760" 30 "SITL MAVLink listener"
 
+phase="start_mavros"
 start_group mavros "${run_dir}/mavros.log" \
   ros2 launch mavros apm.launch \
   fcu_url:=tcp://127.0.0.1:5760 namespace:=uav1/mavros
 wait_log "${run_dir}/sitl.log" "Loaded defaults" 45 "ArduPilot defaults"
 
 gz_args=(-r -s --headless-rendering -v 3)
+phase="start_gazebo"
 start_group gazebo "${run_dir}/gazebo.log" gz sim "${gz_args[@]}" "${world}"
 wait_log "${run_dir}/sitl.log" "JSON received" 90 "SITL-Gazebo JSON link"
 wait_log "${run_dir}/mavros.log" "Got HEARTBEAT" 60 "MAVROS heartbeat"
@@ -265,15 +359,18 @@ wait_log "${run_dir}/mavros.log" "Got HEARTBEAT" 60 "MAVROS heartbeat"
 # Keep the primary SQLite file directly readable for post-flight correlation.
 # Compression can be performed on a verified copy after recording; a killed
 # compression/finalization process must not make the only evidence unreadable.
+phase="start_rosbag"
 start_group rosbag "${run_dir}/rosbag.log" \
   ros2 bag record --compression-mode none \
   -o "${run_dir}/rosbag" \
   /clock /livox/lidar /livox/imu /localization/odom \
   /uav1/mavros/odometry/out /uav1/mavros/local_position/odom \
   /uav1/mavros/state /uav1/mavros/extended_state /uav1/mavros/statustext/recv \
-  /uav1/mavros/imu/data \
+  /uav1/mavros/sys_status /uav1/mavros/estimator_status /uav1/mavros/imu/data \
+  /uav1/mavros/setpoint_position/local \
   /xq/p4/extnav/status /xq/eval/p4/ground_truth
 
+phase="start_p4_stack"
 start_group p4_stack "${run_dir}/p4-stack.log" \
   ros2 launch xq_sim_bringup xq_p4_external_nav.launch.py \
   evaluation_result_file:="${evaluation_result}" \
@@ -282,6 +379,7 @@ start_group p4_stack "${run_dir}/p4-stack.log" \
 # Wait for the real algorithm output, not only process startup.  Use the
 # diagnostic probe shared with P5 so QoS discovery failures are captured
 # separately from a genuine FAST-LIO no-odom failure.
+phase="wait_localization"
 python3 "${script_dir}/wait_for_odometry.py" \
   --topic /localization/odom --timeout 100 \
   --output "${run_dir}/first-localization-odom.txt" \
@@ -291,14 +389,44 @@ python3 "${script_dir}/wait_for_odometry.py" \
   }
 assert_core_alive
 
-ros2 topic list --no-daemon -t >"${run_dir}/ros-topics.txt" 2>&1
-ros2 node list --no-daemon >"${run_dir}/ros-nodes.txt" 2>&1
-ros2 service list --no-daemon -t >"${run_dir}/ros-services.txt" 2>&1
-gz topic -l >"${run_dir}/gz-topics.txt" 2>&1
-ros2 topic info --no-daemon /uav1/mavros/odometry/out -v \
-  >"${run_dir}/external-nav-topic-graph.txt" 2>&1
-ros2 topic info --no-daemon /xq/eval/p4/ground_truth -v \
-  >"${run_dir}/ground-truth-topic-graph.txt" 2>&1
+phase="audit_prearm_graph"
+timeout 15 ros2 topic list --no-daemon -t >"${run_dir}/ros-topics.txt" 2>&1
+timeout 15 ros2 node list --no-daemon >"${run_dir}/ros-nodes.txt" 2>&1
+timeout 15 ros2 service list --no-daemon -t >"${run_dir}/ros-services.txt" 2>&1
+timeout 15 gz topic -l >"${run_dir}/gz-topics.txt" 2>&1
+graph_probe /xq/p4/extnav/status "${run_dir}/extnav-status-graph.txt"
+graph_probe /uav1/mavros/odometry/out "${run_dir}/external-nav-topic-graph.txt"
+graph_probe /xq/eval/p4/ground_truth "${run_dir}/ground-truth-topic-graph.txt"
+
+python3 - "${script_dir}" "${run_dir}" <<'PY'
+import json, pathlib, sys
+sys.path.insert(0, sys.argv[1])
+from impact_runtime_audit import _endpoints, check_extnav
+run = pathlib.Path(sys.argv[2])
+status = (run / "extnav-status-graph.txt").read_text()
+output = (run / "external-nav-topic-graph.txt").read_text()
+truth = (run / "ground-truth-topic-graph.txt").read_text()
+extnav = check_extnav(status, output)
+recorder_participants = {x["participant_gid"] for x in extnav["output_subscribers"]
+                         if x["node"].startswith("rosbag2_recorder")}
+truth_subscribers = _endpoints(truth, "SUBSCRIPTION")
+resolved = []
+for endpoint in truth_subscribers:
+    node = endpoint["node"]
+    if node == "_NODE_NAME_UNKNOWN_" and endpoint["participant_gid"] in recorder_participants:
+        node = "rosbag2_recorder@gid"
+    resolved.append({**endpoint, "resolved_node": node})
+truth_isolated = (any(item["resolved_node"] == "xq_p4_evaluator" for item in resolved) and all(
+    item["resolved_node"] == "xq_p4_evaluator" or
+    item["resolved_node"].startswith("rosbag2_recorder") for item in resolved))
+report = {"extnav": extnav, "truth_endpoints": resolved,
+          "truth_isolation": truth_isolated}
+report["passed"] = bool(truth_isolated and extnav["status_single_publisher"] and
+    extnav["output_single_adapter_publisher"] and extnav["mavros_output_subscription"])
+(run / "p4-runtime-audit.json").write_text(json.dumps(report, indent=2) + "\n")
+if not report["passed"]:
+    raise SystemExit("P4 graph audit failed")
+PY
 
 grep -q '/uav1/mavros/odometry/out' "${run_dir}/ros-topics.txt" || {
   echo "MAVROS odometry input topic is absent." >&2; exit 6;
@@ -310,6 +438,7 @@ grep -q '/xq/p4/imu' "${run_dir}/gz-topics.txt" || {
   echo "P4 IMU Gazebo topic is absent." >&2; exit 6;
 }
 
+phase="start_p4_mission"
 start_group mission "${run_dir}/mission.log" \
   ros2 run xq_autonomy xq_p4_mission --ros-args \
   -p result_file:="${mission_result}" \
@@ -318,7 +447,32 @@ start_group mission "${run_dir}/mission.log" \
   -p square_side_m:=2.0 \
   -p hover_duration_s:=5.0
 
+# The task has a pre-arm health phase, leaving time to prove that exactly the
+# bound P4 node owns the command topic before any ARM request can be accepted.
+sleep 1
+timeout 15 ros2 node list --no-daemon >"${run_dir}/ros-nodes-with-mission.txt" 2>&1
+[[ "$(grep -c '^/xq_p4_mission$' "${run_dir}/ros-nodes-with-mission.txt")" == 1 ]] || {
+  echo "Expected exactly one xq_p4_mission node." >&2; exit 7;
+}
+graph_probe /uav1/mavros/setpoint_position/local "${run_dir}/p4-setpoint-graph.txt"
+python3 - "${script_dir}" "${run_dir}" <<'PY'
+import json, pathlib, sys
+sys.path.insert(0, sys.argv[1])
+from impact_runtime_audit import _endpoints
+run = pathlib.Path(sys.argv[2])
+report_path = run / "p4-runtime-audit.json"
+report = json.loads(report_path.read_text())
+publishers = _endpoints((run / "p4-setpoint-graph.txt").read_text(), "PUBLISHER")
+report["setpoint_publishers"] = publishers
+report["single_p4_mission"] = len(publishers) == 1 and publishers[0]["node"] == "xq_p4_mission"
+report["passed"] = bool(report["passed"] and report["single_p4_mission"])
+report_path.write_text(json.dumps(report, indent=2) + "\n")
+if not report["passed"]:
+    raise SystemExit("P4 mission ownership audit failed")
+PY
+
 mission_deadline=$((SECONDS + 260))
+phase="wait_p4_mission"
 while [[ ! -s "${mission_result}" ]] && ((SECONDS < mission_deadline)); do
   assert_core_alive
   sleep 1
@@ -329,6 +483,7 @@ mission_status="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])
 
 evaluation_deadline=$((SECONDS + minimum_eval_duration_s + 30))
 evaluation_status="IN_PROGRESS"
+phase="wait_localization_evaluation"
 while ((SECONDS < evaluation_deadline)); do
   assert_core_alive
   if [[ -s "${evaluation_result}" ]]; then
@@ -357,9 +512,62 @@ if grep -Eq 'Node name: /(xq_fast_lio|xq_p4_external_nav|xq_p4_mission)' \
   exit 11
 fi
 
+set +e
+phase="cleanup"
 stop_groups
+process_status=$?
+set -e
+((process_status == 0)) || {
+  echo "P4 process cleanup did not pass; see cleanup-processes.jsonl." >&2
+  exit "${process_status}"
+}
 finish_audit
 inventory_dataflash
+timeout 30 ros2 bag info "${run_dir}/rosbag" >"${run_dir}/rosbag-info.txt"
+phase="validate_artifacts"
+python3 "${script_dir}/analyze_external_nav_health.py" "${run_dir}" \
+  --output "${run_dir}/external-nav-health-diagnostic.json" \
+  >"${run_dir}/external-nav-health-diagnostic.log"
+
+python3 - "${run_dir}" <<'PY'
+import json, pathlib, sys
+run = pathlib.Path(sys.argv[1])
+diagnostic = json.loads((run / "external-nav-health-diagnostic.json").read_text())
+cleanup = [json.loads(line) for line in (run / "cleanup-processes.jsonl").read_text().splitlines()
+           if line.strip()]
+required_labels = {"sitl", "mavros", "gazebo", "rosbag", "p4_stack", "mission"}
+counts = diagnostic["rosbag"]["topic_counts"]
+required_topics = ("/localization/odom", "/uav1/mavros/odometry/out",
+                   "/uav1/mavros/state", "/xq/p4/extnav/status",
+                   "/xq/eval/p4/ground_truth")
+dataflash = diagnostic["dataflash"]["files"]
+logs = "\n".join((run / name).read_text(errors="replace") for name in
+                 ("p4-stack.log", "mavros.log", "gazebo.log", "sitl.log", "mission.log"))
+log_errors = [marker for marker in ("Traceback (most recent call last)",
+    "terminate called after throwing", "Segmentation fault", "core dumped", "process has died")
+    if marker in logs]
+checks = {
+    "cleanup_labels_complete": required_labels <= {item["label"] for item in cleanup},
+    "cleanup_exit_codes_accepted": all(item["wait_status"] in (0, 130, 143) for item in cleanup),
+    "cleanup_no_forced_kill": all(not item["forced_kill"] for item in cleanup),
+    "cleanup_no_residual": all(not item["residual"] for item in cleanup),
+    "cleanup_no_log_errors": not log_errors,
+    "rosbag_info_readable": bool((run / "rosbag-info.txt").read_text().strip()),
+    "rosbag_key_topics_have_data": all(int(counts.get(topic, 0)) > 0 for topic in required_topics),
+    "dataflash_readable": bool(dataflash) and all(item["size_bytes"] > 0 for item in dataflash),
+    "dataflash_has_vision_data": bool(dataflash) and all(item["visp"]["count"] > 0 for item in dataflash),
+    "no_critical_fcu_fault": diagnostic["dataflash"]["first_critical_message"] is None,
+}
+report = {"schema_version": 1, "checks": checks, "passed": all(checks.values()),
+          "cleanup_processes": cleanup, "cleanup_log_errors": log_errors,
+          "rosbag_topic_counts": {topic: counts.get(topic, 0) for topic in required_topics},
+          "dataflash": dataflash,
+          "first_dataflash_fault": diagnostic["dataflash"]["first_critical_message"],
+          "first_ros_fcu_fault": diagnostic["rosbag"]["status_text"]["first_fault"]}
+(run / "artifact-validation.json").write_text(json.dumps(report, indent=2) + "\n")
+if not report["passed"]:
+    raise SystemExit("P4 artifact/cleanup validation failed")
+PY
 
 python3 - "${run_dir}" <<'PY'
 import json
@@ -372,12 +580,14 @@ mission = json.loads((run / "mission-result.json").read_text(encoding="utf-8"))
 evaluation = json.loads((run / "localization-evaluation.json").read_text(encoding="utf-8"))
 metadata = run / "rosbag" / "metadata.yaml"
 isolation = (run / "isolation-audit.txt").read_text(encoding="utf-8")
+runtime_audit = json.loads((run / "p4-runtime-audit.json").read_text(encoding="utf-8"))
+artifacts = json.loads((run / "artifact-validation.json").read_text(encoding="utf-8"))
 gazebo_log = (run / "gazebo.log").read_text(encoding="utf-8", errors="replace")
 launcher_log = (run / "launcher.log").read_text(encoding="utf-8", errors="replace") if (run / "launcher.log").exists() else ""
 summary = {
     "schema_version": 2,
     "gate": "P4_GPS_OFF_FAST_LIO_EXTERNAL_NAV_CLOSED_LOOP",
-    "status": "PASS",
+    "status": "PENDING",
     "mission_status": mission["status"],
     "mission_elapsed_s": mission["elapsed_s"],
     "mission_checks": mission["checks"],
@@ -395,14 +605,20 @@ summary = {
     if (run / "dataflash.inventory.txt").is_file() else [],
     "ground_truth_isolated": True,
     "external_assets_unchanged": "PASS:" in isolation,
+    "runtime_audit": runtime_audit,
+    "artifact_validation": artifacts,
     "gazebo_clean_exit": not any(x in gazebo_log + launcher_log for x in ("Segmentation fault", "core dumped")),
     "generated_at_utc": datetime.now(timezone.utc).isoformat(),
 }
+completion_passed = (summary["gazebo_clean_exit"] and runtime_audit["passed"] and
+                     artifacts["passed"] and
+                     mission.get("termination", {}).get("confirmed") is True)
+summary["status"] = "PASS" if completion_passed else "FAIL"
 (run / "summary.json").write_text(
     json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
 )
-if not summary["gazebo_clean_exit"]:
-    raise SystemExit("Gazebo exit was not clean")
+if not completion_passed:
+    raise SystemExit("P4 completion evidence did not pass")
 print(json.dumps(summary, ensure_ascii=False, indent=2))
 PY
 
