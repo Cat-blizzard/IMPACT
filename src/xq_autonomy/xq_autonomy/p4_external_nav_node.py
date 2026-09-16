@@ -271,6 +271,11 @@ def main(args=None) -> None:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except Exception:
+        # Humble may raise RCLError while rebuilding a wait set after SIGINT
+        # has already invalidated the context. Runtime errors still propagate.
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
         if rclpy.ok():

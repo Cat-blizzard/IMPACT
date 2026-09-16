@@ -517,3 +517,12 @@ def test_ros_entry_points_guard_external_shutdown(filename: str) -> None:
     assert "ExternalShutdownException" in source
     assert "if rclpy.ok():" in source
     assert "rclpy.shutdown()" in source
+
+
+@pytest.mark.parametrize("filename", ["p4_external_nav_node.py", "p4_mission_node.py"])
+def test_p4_entry_points_suppress_only_invalid_context_shutdown_race(filename: str) -> None:
+    source = (
+        Path(__file__).parents[1] / "xq_autonomy" / filename
+    ).read_text(encoding="utf-8")
+    assert "except Exception:" in source
+    assert "if rclpy.ok():\n            raise" in source
