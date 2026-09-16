@@ -54,6 +54,9 @@ def _reported_body_velocity(message: Odometry) -> tuple[float, float, float] | N
 class P4ExternalNavNode(Node):
     """Retimestamp LIO poses and derive body velocity for MAVROS ODOMETRY."""
 
+    SOURCE_QUEUE_DEPTH = 50
+    OUTPUT_QUEUE_DEPTH = 1
+
     def __init__(self) -> None:
         super().__init__("xq_p4_external_nav")
         self.declare_parameter("input_topic", "/localization/odom")
@@ -77,9 +80,18 @@ class P4ExternalNavNode(Node):
         self.velocity_variance = float(self.get_parameter("velocity_variance").value)
         self.maximum_gap = float(self.get_parameter("maximum_source_gap_s").value)
 
-        reliable = QoSProfile(depth=50, reliability=ReliabilityPolicy.RELIABLE)
+        source_qos = QoSProfile(
+            depth=self.SOURCE_QUEUE_DEPTH, reliability=ReliabilityPolicy.RELIABLE
+        )
+        # MAVROS consumes ~/odometry/out with a depth-one reader. Keeping a
+        # larger reliable writer history here can replay stale poses after a
+        # CPU scheduling stall, while ArduPilot requires a fresh sample at
+        # least every 300 ms. Keep only the newest FCU-bound estimate.
+        output_qos = QoSProfile(
+            depth=self.OUTPUT_QUEUE_DEPTH, reliability=ReliabilityPolicy.RELIABLE
+        )
         self.publisher = self.create_publisher(
-            Odometry, str(self.get_parameter("output_topic").value), reliable
+            Odometry, str(self.get_parameter("output_topic").value), output_qos
         )
         self.status_publisher = self.create_publisher(
             String, str(self.get_parameter("status_topic").value), 10
@@ -88,7 +100,7 @@ class P4ExternalNavNode(Node):
             Odometry,
             str(self.get_parameter("input_topic").value),
             self._odom_cb,
-            reliable,
+            source_qos,
         )
         # Publish a sequenced health sample frequently enough for the mission
         # gate to distinguish a live stream from one stale status message.

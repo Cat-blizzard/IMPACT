@@ -10,9 +10,11 @@ build_manifest="${IMPACT_BUILD_MANIFEST:-${install_root}/.xq_build_manifest.json
 requested_run_dir=""
 profile="server_gpu"
 minimum_eval_duration_s=70
+smoke_only=false
+observation_seconds=45
 
 usage() {
-  echo "Usage: $0 [--profile local_cpu|server_gpu] [--minimum-eval-duration SECONDS] [--run-dir PATH]" >&2
+  echo "Usage: $0 [--profile local_cpu|server_gpu] [--minimum-eval-duration SECONDS] [--run-dir PATH] [--smoke-only] [--observation-seconds SECONDS]" >&2
 }
 
 while (($#)); do
@@ -20,6 +22,8 @@ while (($#)); do
     --profile) profile="$2"; shift 2 ;;
     --minimum-eval-duration) minimum_eval_duration_s="$2"; shift 2 ;;
     --run-dir) requested_run_dir="$2"; shift 2 ;;
+    --smoke-only) smoke_only=true; shift ;;
+    --observation-seconds) observation_seconds="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 2 ;;
   esac
@@ -30,6 +34,12 @@ done
 }
 ((minimum_eval_duration_s >= 60)) || {
   echo "P4 evaluation must cover at least 60 seconds." >&2; exit 2;
+}
+[[ "${observation_seconds}" =~ ^[1-9][0-9]*$ ]] || {
+  echo "Invalid smoke observation duration." >&2; exit 2;
+}
+((observation_seconds >= 30)) || {
+  echo "P4 smoke observation must cover at least 30 seconds." >&2; exit 2;
 }
 
 for required in \
@@ -123,15 +133,17 @@ evaluation_result="${run_dir}/localization-evaluation.json"
 
 cat >"${run_dir}/run.env" <<EOF
 run_started_utc=${timestamp}
-  minimum_eval_duration_s=${minimum_eval_duration_s}
-  profile=${profile}
+mode=$([[ "${smoke_only}" == true ]] && echo NO_ARM_SMOKE || echo P4_FLIGHT)
+minimum_eval_duration_s=${minimum_eval_duration_s}
+observation_seconds=${observation_seconds}
+profile=${profile}
 ros_domain_id=${ROS_DOMAIN_ID}
 gz_partition=${GZ_PARTITION}
-  world=${world}
-  install_root=${install_root}
-  ardupilot_root=${ardupilot_root}
-  plugin_root=${plugin_root}
-  build_manifest=${build_manifest}
+world=${world}
+install_root=${install_root}
+ardupilot_root=${ardupilot_root}
+plugin_root=${plugin_root}
+build_manifest=${build_manifest}
 mavros_namespace=/uav1/mavros
 external_nav_topic=/uav1/mavros/odometry/out
 gps_disabled=GPS_TYPE:0,SIM_GPS_DISABLE:1
@@ -437,6 +449,128 @@ grep -q '/xq/p4/lidar/points' "${run_dir}/gz-topics.txt" || {
 grep -q '/xq/p4/imu' "${run_dir}/gz-topics.txt" || {
   echo "P4 IMU Gazebo topic is absent." >&2; exit 6;
 }
+
+if [[ "${smoke_only}" == true ]]; then
+  phase="no_arm_observation"
+  set +e
+  timeout "$((observation_seconds + 20))" \
+    python3 "${script_dir}/startup_smoke_monitor.py" \
+      --seconds "${observation_seconds}" \
+      --output "${run_dir}/no-arm-observation.json" \
+      >"${run_dir}/no-arm-observation.log" 2>&1
+  observation_status=$?
+  set -e
+
+  phase="cleanup"
+  set +e
+  stop_groups
+  process_status=$?
+  finish_audit
+  audit_status=$?
+  inventory_dataflash
+  timeout 30 ros2 bag info "${run_dir}/rosbag" >"${run_dir}/rosbag-info.txt" 2>&1
+  bag_info_status=$?
+  python3 "${script_dir}/analyze_external_nav_health.py" "${run_dir}" \
+    --output "${run_dir}/external-nav-health-diagnostic.json" \
+    >"${run_dir}/external-nav-health-diagnostic.log" 2>&1
+  diagnostic_status=$?
+  set -e
+
+  phase="validate_no_arm_smoke"
+  python3 - "${run_dir}" "${observation_status}" "${process_status}" \
+    "${audit_status}" "${bag_info_status}" "${diagnostic_status}" <<'PY'
+import json
+import pathlib
+import sys
+
+run = pathlib.Path(sys.argv[1])
+observation_status, process_status, audit_status, bag_info_status, diagnostic_status = (
+    int(value) for value in sys.argv[2:]
+)
+observation_path = run / "no-arm-observation.json"
+diagnostic_path = run / "external-nav-health-diagnostic.json"
+observation = json.loads(observation_path.read_text()) if observation_path.is_file() else {}
+diagnostic = json.loads(diagnostic_path.read_text()) if diagnostic_path.is_file() else {}
+cleanup = [
+    json.loads(line)
+    for line in (run / "cleanup-processes.jsonl").read_text().splitlines()
+    if line.strip()
+] if (run / "cleanup-processes.jsonl").is_file() else []
+required_labels = {"sitl", "mavros", "gazebo", "rosbag", "p4_stack"}
+dataflash = diagnostic.get("dataflash", {}).get("files", [])
+ingress = diagnostic.get("comparison", {}).get("fcu_vision_ingress", {})
+logs = "\n".join(
+    (run / name).read_text(errors="replace")
+    for name in ("p4-stack.log", "mavros.log", "gazebo.log", "sitl.log")
+    if (run / name).is_file()
+)
+crash_markers = [
+    marker for marker in (
+        "Traceback (most recent call last)",
+        "terminate called after throwing",
+        "Segmentation fault",
+        "core dumped",
+        "process has died",
+    ) if marker in logs
+]
+visp_continuous = bool(dataflash) and all(
+    item.get("visp", {}).get("count", 0) > 1
+    and item["visp"].get("receive_gaps_at_least_300ms") == 0
+    and item["visp"].get("max_receive_gap_s") is not None
+    and item["visp"]["max_receive_gap_s"] < 0.3
+    for item in dataflash
+)
+ratio = ingress.get("dataflash_to_ros_output_ratio")
+checks = {
+    "observation_command_passed": observation_status == 0,
+    "observation_criteria_passed": observation.get("passed") is True,
+    "never_armed": observation.get("fcu_armed_count") == 0,
+    "no_arm_or_takeoff_evidence": not observation.get("arm_or_takeoff_texts", ["missing"]),
+    "mission_node_absent": "/xq_p4_mission" not in (run / "ros-nodes.txt").read_text(),
+    "mission_result_absent": not (run / "mission-result.json").exists(),
+    "cleanup_command_passed": process_status == 0,
+    "cleanup_audit_passed": audit_status == 0,
+    "cleanup_labels_complete": required_labels <= {item.get("label") for item in cleanup},
+    "cleanup_exit_codes_accepted": bool(cleanup) and all(
+        item.get("wait_status") in (0, 130, 143) for item in cleanup
+    ),
+    "cleanup_no_forced_kill": bool(cleanup) and all(
+        not item.get("forced_kill") for item in cleanup
+    ),
+    "cleanup_no_residual": bool(cleanup) and all(not item.get("residual") for item in cleanup),
+    "cleanup_no_crash_markers": not crash_markers,
+    "rosbag_info_readable": bag_info_status == 0 and bool(
+        (run / "rosbag-info.txt").read_text().strip()
+    ),
+    "diagnostic_readable": diagnostic_status == 0 and bool(diagnostic),
+    "dataflash_visp_continuous": visp_continuous,
+    "dataflash_receives_at_least_90pct_of_ros_output": isinstance(ratio, (int, float))
+    and ratio >= 0.9,
+    "no_critical_fcu_fault": diagnostic.get("dataflash", {}).get(
+        "first_critical_message"
+    ) is None,
+}
+report = {
+    "schema_version": 1,
+    "gate": "P4_CPU_NO_ARM_EXTERNAL_NAV_SMOKE",
+    "status": "PASS" if all(checks.values()) else "FAIL",
+    "checks": checks,
+    "observation": observation,
+    "fcu_vision_ingress": ingress,
+    "dataflash": dataflash,
+    "cleanup_processes": cleanup,
+    "crash_markers": crash_markers,
+}
+(run / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
+if report["status"] != "PASS":
+    raise SystemExit("P4 no-arm smoke validation failed")
+print(json.dumps({"status": report["status"], "checks": checks,
+                  "fcu_vision_ingress": ingress}, indent=2))
+PY
+  echo "PASS: P4 no-arm ExternalNav smoke completed."
+  echo "Results: ${run_dir}"
+  exit 0
+fi
 
 phase="start_p4_mission"
 start_group mission "${run_dir}/mission.log" \

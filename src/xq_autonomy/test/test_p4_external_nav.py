@@ -37,6 +37,11 @@ def test_external_nav_covariance_never_claims_false_certainty() -> None:
     assert all(math.isfinite(value) for value in result)
 
 
+def test_external_nav_output_history_matches_mavros_depth_one_reader() -> None:
+    assert P4ExternalNavNode.OUTPUT_QUEUE_DEPTH == 1
+    assert P4ExternalNavNode.SOURCE_QUEUE_DEPTH > P4ExternalNavNode.OUTPUT_QUEUE_DEPTH
+
+
 def test_esekf_velocity_is_preferred_only_when_covariance_marks_it_available() -> None:
     message = Odometry()
     message.twist.twist.linear.x = 1.25

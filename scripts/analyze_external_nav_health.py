@@ -287,6 +287,8 @@ def read_dataflash(run_dir: Path) -> dict[str, Any]:
                 visp.append(
                     {
                         "time_s": time_s,
+                        "remote_time_s": float(data.get("RTimeUS", math.nan)) / 1e6,
+                        "corrected_time_s": float(data.get("CTimeMS", math.nan)) / 1e3,
                         "roll_deg": float(data.get("R", math.nan)),
                         "pitch_deg": float(data.get("P", math.nan)),
                         "yaw_deg": float(data.get("Y", math.nan)),
@@ -296,6 +298,32 @@ def read_dataflash(run_dir: Path) -> dict[str, Any]:
                         "ignored": int(data.get("Ign", 0)),
                     }
                 )
+        receive_gaps = [
+            current["time_s"] - previous["time_s"]
+            for previous, current in zip(visp, visp[1:])
+        ]
+        remote_gaps = [
+            current["remote_time_s"] - previous["remote_time_s"]
+            for previous, current in zip(visp, visp[1:])
+            if math.isfinite(previous["remote_time_s"])
+            and math.isfinite(current["remote_time_s"])
+        ]
+        correction_ages_ms = [
+            1000.0 * (item["time_s"] - item["corrected_time_s"])
+            for item in visp
+            if math.isfinite(item["corrected_time_s"])
+        ]
+        timeout_gaps = [
+            {
+                "previous_receive_time_s": previous["time_s"],
+                "receive_time_s": current["time_s"],
+                "gap_s": current["time_s"] - previous["time_s"],
+                "previous_remote_time_s": previous["remote_time_s"],
+                "remote_time_s": current["remote_time_s"],
+            }
+            for previous, current in zip(visp, visp[1:])
+            if current["time_s"] - previous["time_s"] >= 0.3
+        ]
         result["files"].append(
             {
                 "path": str(path),
@@ -306,6 +334,12 @@ def read_dataflash(run_dir: Path) -> dict[str, Any]:
                     "count": len(visp),
                     "first": visp[0] if visp else None,
                     "last": visp[-1] if visp else None,
+                    "max_receive_gap_s": max(receive_gaps) if receive_gaps else None,
+                    "max_remote_header_gap_s": max(remote_gaps) if remote_gaps else None,
+                    "receive_gaps_at_least_300ms": len(timeout_gaps),
+                    "timeout_gaps": timeout_gaps,
+                    "max_correction_age_ms": max(correction_ages_ms)
+                    if correction_ages_ms else None,
                     "max_abs_roll_deg": max((abs(item["roll_deg"]) for item in visp), default=None),
                     "max_abs_pitch_deg": max((abs(item["pitch_deg"]) for item in visp), default=None),
                     "max_position_error_m": max((item["position_error_m"] for item in visp), default=None),
@@ -330,6 +364,11 @@ def build_report(run_dir: Path) -> dict[str, Any]:
     raw_samples = raw.get("samples", [])
     output_samples = output.get("samples", [])
     fcu_samples = fcu.get("samples", [])
+    visp_count = sum(item["visp"]["count"] for item in dataflash["files"])
+    output_count = int(output.get("count", 0))
+    visp_timeout_gaps = sum(
+        item["visp"]["receive_gaps_at_least_300ms"] for item in dataflash["files"]
+    )
     conclusion = []
     if dataflash["first_critical_message"]:
         conclusion.append(
@@ -353,6 +392,17 @@ def build_report(run_dir: Path) -> dict[str, Any]:
             "raw_localization": raw,
             "external_nav_output": output,
             "fcu_local_odom": fcu,
+            "fcu_vision_ingress": {
+                "ros_external_nav_output_count": output_count,
+                "dataflash_visp_count": visp_count,
+                "dataflash_to_ros_output_ratio": visp_count / output_count
+                if output_count else None,
+                "dataflash_receive_gaps_at_least_300ms": visp_timeout_gaps,
+                "interpretation": (
+                    "VISP is written by ArduPilot when an ODOMETRY pose reaches the "
+                    "VisualOdom backend. A ROS output count alone does not prove FCU ingress."
+                ),
+            },
             "first_ros_fcu_fault": ros["status_text"]["first_fault"],
             "first_dataflash_fault": dataflash["first_critical_message"],
             "attitude": {
