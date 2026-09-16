@@ -1,5 +1,18 @@
 # 复现状态与问题日志
 
+## 2026-09-17：当前代码 CPU P4 冻结验收
+
+运行提交 `a4d3fb33209b73f2a3c1514ff4709848db28d1b9` 在固定的 llvmpipe CPU 软件渲染、
+ArduPilot `2a3dc4b` 和 Gazebo 插件 `082a0fe` 下完成一次严格不解锁冒烟及三次独立冷启动
+P4 正常任务。四组安装树、参数、场景和依赖哈希一致；任务、定位、落地解除武装、
+bag/DataFlash 可读性和退出清理均通过。错误依赖造成的 `GPS_TYPE` 缺失样本及清理竞态失败
+均保留，没有与最终组混算。详见
+[当前 CPU P4 验收报告](CPU_P4_A4D3FB3_VALIDATION_20260917.md) 与
+[机器索引](../evidence/P4_CPU_A4D3FB3_20260917/validation-index.json)。
+
+该结论只覆盖 CPU SITL P4。旧 P5 FAIL、1.2 m `UNVERIFIED_FLIGHT`、GPU 遗留风险、阶段
+A/B、正式矩阵和实机状态均未改变。
+
 ## 2026-09-17：二次审查修复（尚未重飞）
 
 修复 P4 DESCEND 的遗留超时和仲裁授权状态字段，并将阶段 A 的事件存在检查替换为实际 rosbag 指令授权审计。证据不足保持 REVIEW_REQUIRED；不升级历史飞行验收。范围和验证边界见 [二次修复记录](CODE_REVIEW_FOLLOWUP_20260917.md)。
