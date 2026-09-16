@@ -206,7 +206,14 @@ class P4ExternalNavNode(Node):
         span = self.sample_times[-1] - self.sample_times[0] if len(self.sample_times) > 1 else 0.0
         rate = (len(self.sample_times) - 1) / span if span > 0.0 else 0.0
         minimum_rate = float(self.get_parameter("minimum_healthy_rate_hz").value)
-        subscribers = self.publisher.get_subscription_count()
+        # Cleanup can invalidate the ROS context while a timer callback is queued.
+        # Treat that callback as a no-op so shutdown does not become a node failure.
+        if not rclpy.ok():
+            return
+        try:
+            subscribers = self.publisher.get_subscription_count()
+        except rclpy.exceptions.RCLError:
+            return
         reasons = []
         if source_age > self.maximum_gap:
             reasons.append("source_stale")
