@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "scope": "WSL D3D12 Gazebo shutdown diagnosis, strict GPU no-arm smoke, and one GPU P4 development flight",
+  "validated_git_commit": "b3ada485aa1b23092ddcc372e05891ce45c5a294",
+  "source_sha256": "cba2bc5857068e3fe8b3a7a0fc015f36a6bda78f3438ce91ffc853159ad1d849",
+  "build_manifest": {
+    "path": "/home/ld666/impact-build/build-manifest.json",
+    "sha256": "8c689b1f40791e483baee74cbdfecc6239f76f333cf1f9c14273cf0ffabf1391"
+  },
+  "runtime_dependencies_sha256": "3ae1b41d1f6cb481f44f61caddb67c6e372b584735f3a113eaa8ed36f22fd353",
+  "configuration": {
+    "profile": "server_gpu",
+    "renderer": "D3D12 (NVIDIA RTX PRO 6000 Blackwell Workstation Edition)",
+    "hardware_accelerated": true,
+    "wsl_kernel": "6.6.114.1-microsoft-standard-WSL2",
+    "gazebo_sim_version": "8.15.0",
+    "egl_terminate_guard_sha256": "56fbf9ea817b45ed44b17b85f5bc2eb41c8cbfdd3815ebc5c6ec46dbd008cf10"
+  },
+  "runs": [
+    {
+      "id": "p4_gpu_b3ada48_no_arm_smoke_final",
+      "mode": "NO_ARM_SMOKE",
+      "status": "PASS",
+      "result_directory": "experiments/results/external_nav/p4_gpu_b3ada48_no_arm_smoke_final",
+      "observation_seconds": 45.00542916089762,
+      "never_armed": true,
+      "mission_node_absent": true,
+      "external_nav_healthy_samples": 230,
+      "external_nav_unhealthy_samples": 0,
+      "ros_external_nav_output_count": 676,
+      "dataflash_visp_count": 664,
+      "dataflash_visp_gaps_ge_300ms": 0,
+      "cleanup": "PASS",
+      "summary_sha256": "8bcdceb2b73baed36a4460e67ecce2d1eea11a91142735e24b506fce56194fdf",
+      "observation_sha256": "ad8de3e9af44f23f9e206b25515358eca0586021dc03fb2a54f7079e7ad311d9",
+      "runtime_audit_sha256": "64738f1522762d162ea1055e211dce2f1242c1fc9395b68daac83eee34f76429",
+      "health_diagnostic_sha256": "a1e48bc2a5366574b6af1ed8682c68f4b3ae29c98db0c3bc3b243119ee72ac59",
+      "rosbag_db3_sha256": "b6744b492cffd692a11078a94292b5f0a879e89a34557358ba8e690ebf79aa70",
+      "dataflash_bin_sha256": "990613dcb70c0f606cd6bf88921f819addd76ff2043934fb8a8e6e17b4643d6c"
+    },
+    {
+      "id": "p4_gpu_b3ada48_dev_flight01",
+      "mode": "P4_FLIGHT",
+      "status": "PASS",
+      "result_directory": "experiments/results/external_nav/p4_gpu_b3ada48_dev_flight01",
+      "mission_elapsed_seconds": 56.101,
+      "single_arm_request": true,
+      "landed_and_disarmed": true,
+      "localization_ate_rms_m": 0.005599349370480242,
+      "localization_error_max_m": 0.015715293244365217,
+      "ros_external_nav_output_count": 890,
+      "dataflash_visp_count": 885,
+      "dataflash_visp_max_receive_gap_s": 0.3230000000000004,
+      "dataflash_visp_gaps_ge_300ms": 1,
+      "startup_gap_before_arm": true,
+      "cleanup": "PASS",
+      "summary_sha256": "8966af74e166a64e4859df395e1631e819e94c5c10501a33373b7c4fa2b3855d",
+      "mission_sha256": "fee0f259c4ace50d262044c06ede45e7426644e0d7c1271104fea656c193d99b",
+      "localization_evaluation_sha256": "681fffe2e93aff7064e19ca100f4c971ccbb5ad1ad87d17e496193ca2c52a986",
+      "artifact_validation_sha256": "1d692fcefe09417e9b6c6c86a29103d126b29cef06ef8c8e3ade6cfaa54d441f",
+      "runtime_audit_sha256": "beb28c2c1158ac18979bc76fcd2df981a64f6375d2fbdefee417d8015553bb6d",
+      "health_diagnostic_sha256": "1274bb0c6e8e87983df71cd02b54ddf148a48a96ff4a7d30dfab2d56fab92a4e",
+      "rosbag_db3_sha256": "017292ffe08d1b7c622ade996e1d0521c5b27d528aab580eff543e6eb906fc21",
+      "dataflash_bin_sha256": "8da3184dfa3fd04f41b7a0726f4334a16501d6c48b4214dacef36c93b137f480"
+    }
+  ],
+  "preserved_attempts": [
+    {
+      "id": "p4_gpu_37ffc80_no_arm_diag01",
+      "status": "FAIL",
+      "reason": "Gazebo exit 139; one DataFlash VISP receive gap at least 300 ms"
+    },
+    {
+      "id": "p4_gpu_37ffc80_no_arm_diag02",
+      "status": "FAIL",
+      "reason": "runtime data path passed; Gazebo exit 139 after successful server control request"
+    },
+    {
+      "id": "p4_cpu_37ffc80_no_arm_diag_cleanup01",
+      "status": "PASS",
+      "reason": "CPU control for cleanup path"
+    },
+    {
+      "id": "p4_gpu_37ffc80_no_arm_eglguard01",
+      "status": "PASS",
+      "reason": "development full-stack validation of the EGL termination guard"
+    }
+  ],
+  "regression": {
+    "packages_built": 14,
+    "python_tests": "196 passed",
+    "ros_contract": "PASS"
+  },
+  "limitations": [
+    "One GPU P4 flight is a development sample, not a three-cold-start acceptance group.",
+    "The flight retained one 0.323 s pre-arm DataFlash VISP receive gap.",
+    "Historical VisOdom failures are not proven to share the Gazebo shutdown root cause.",
+    "MAVROS time reset messages also occur in CPU samples and remain a separate observation.",
+    "Stage A, P5, recovery experiments, formal matrix and hardware are out of scope."
+  ]
+}
