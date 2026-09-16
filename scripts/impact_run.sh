@@ -149,7 +149,8 @@ start rosbag ros2 bag record -o "$run/rosbag" \
  /impact/planner_goal /impact/planner_candidate /impact/certified_bspline \
  /impact/authorization /impact/position_cmd /impact/mission_stage /impact/status \
  /impact/arbiter_status /uav1/mavros/state /uav1/mavros/local_position/odom \
- /uav1/mavros/odometry/out /uav1/mavros/statustext/recv /uav1/mavros/estimator_status \
+ /uav1/mavros/odometry/out /uav1/mavros/statustext/recv /uav1/mavros/sys_status \
+ /uav1/mavros/estimator_status \
  /uav1/mavros/imu/data \
  /uav1/mavros/setpoint_position/local /xq/eval/p5/ground_truth /xq/p4/extnav/status
 start stack ros2 launch xq_sim_bringup impact_sitl.launch.py run_dir:="$run"
@@ -169,6 +170,13 @@ audit_args=("$run" "$profile")
 [[ "${IMPACT_SMOKE_ONLY:-0}" == 1 ]] && audit_args+=(--smoke)
 python3 "$root/scripts/impact_runtime_audit.py" "${audit_args[@]}"
 if [[ "${IMPACT_SMOKE_ONLY:-0}" == 1 ]]; then
+  phase="smoke_node_audit"
+  timeout 10 ros2 node list --no-daemon --spin-time 2 >"$run/runtime-nodes.txt"
+  printf '%s\n' "$(date -Is)" >"$run/runtime-nodes-collected-at.txt"
+  if grep -Eq '(^|/)impact_mission($|/)' "$run/runtime-nodes.txt"; then
+    echo "Smoke mode unexpectedly started impact_mission" >&2
+    exit 7
+  fi
   phase="smoke_observation"
   python3 "$root/scripts/startup_smoke_monitor.py" --seconds 45 --output "$run/smoke-observation.json"
   phase="smoke_bag_validation"
@@ -186,11 +194,13 @@ r=pathlib.Path(sys.argv[1]); obs=json.loads((r/'smoke-observation.json').read_te
 info=(r/'smoke-bag-info.txt').read_text()
 gaz=(r/'gazebo.log').read_text(errors='replace')
 launch=(r/'launcher.log').read_text(errors='replace')
+nodes=(r/'runtime-nodes.txt').read_text().splitlines()
 result={'mode':'NO_ARM_NO_TAKEOFF','observation':obs,'bag_readable':bool(info.strip()),
+        'mission_node_absent':not any(x.rstrip('/').endswith('/impact_mission') or x == 'impact_mission' for x in nodes),
         'gazebo_exit_evidence':{'signaled': 'Segmentation fault' in gaz or 'core dumped' in gaz,
                                 'launcher_signaled': 'Segmentation fault' in launch or 'core dumped' in launch,
                                 'log_tail':(gaz+'\n'+launch)[-1000:]}}
-result['passed']=result['bag_readable'] and not result['gazebo_exit_evidence']['signaled'] and not result['gazebo_exit_evidence']['launcher_signaled'] and obs['fcu_armed_count']==0 and obs['metrics']['odom']['count']>0 and obs['metrics']['extnav']['count']>0
+result['passed']=result['bag_readable'] and result['mission_node_absent'] and obs.get('passed') is True and not result['gazebo_exit_evidence']['signaled'] and not result['gazebo_exit_evidence']['launcher_signaled']
 (r/'smoke.json').write_text(json.dumps(result,indent=2)+'\n')
 raise SystemExit(0 if result['passed'] else 1)
 PY

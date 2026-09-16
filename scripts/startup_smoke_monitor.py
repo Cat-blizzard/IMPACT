@@ -2,13 +2,46 @@
 """Observe startup topics for a bounded window without arming or commanding flight."""
 import argparse, json, time
 import rclpy
+from rosgraph_msgs.msg import Clock
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
-from mavros_msgs.msg import EstimatorStatus, State, StatusText
+from mavros_msgs.msg import EstimatorStatus, State, StatusText, SysStatus
 from mavros_msgs.srv import CommandLong, StreamRate
 from std_msgs.msg import String
+
+PREARM_CHECK = 1 << 28
+VISION_POSITION = 1 << 7
+
+
+def stamp_s(stamp):
+    return float(stamp.sec) + float(stamp.nanosec) * 1e-9
+
+
+def sample_metric(values, start, end, header=False, age=False):
+    times = [x[0] for x in values]
+    gaps = [b - a for a, b in zip(times, times[1:])]
+    result = {
+        'count': len(times),
+        'rate_hz': (len(times) - 1) / (times[-1] - times[0]) if len(times) > 1 else 0.0,
+        'first_delay_s': times[0] - start if times else None,
+        'last_silence_s': end - times[-1] if times else None,
+        'max_receive_gap_s': max(gaps, default=None),
+        'observation_span_s': times[-1] - times[0] if len(times) > 1 else 0.0,
+    }
+    if header:
+        stamps = [stamp_s(x[2].header.stamp) for x in values]
+        result.update(
+            first_stamp_s=stamps[0] if stamps else None,
+            last_stamp_s=stamps[-1] if stamps else None,
+            max_stamp_gap_s=max((b - a for a, b in zip(stamps, stamps[1:])), default=None),
+            nonincreasing_stamps=sum(b <= a for a, b in zip(stamps, stamps[1:])),
+        )
+        if age:
+            ages = [sim - stamp for (_, sim, _), stamp in zip(values, stamps) if sim is not None]
+            result.update(min_data_age_s=min(ages, default=None), max_data_age_s=max(ages, default=None))
+    return result
 
 
 def service_event(kind, future, **metadata):
@@ -35,17 +68,26 @@ class Monitor(Node):
     def __init__(self):
         super().__init__('impact_startup_smoke_monitor')
         self.samples = {'odom': [], 'extnav': [], 'extnav_output': [], 'fcu': [],
-                        'estimator': [], 'statustext': [], 'fcu_imu': []}
-        self.create_subscription(Odometry, '/localization/odom', lambda m: self.samples['odom'].append((time.monotonic(), m)), 20)
-        self.create_subscription(String, '/xq/p4/extnav/status', lambda m: self.samples['extnav'].append((time.monotonic(), m)), 20)
-        self.create_subscription(Odometry, '/uav1/mavros/odometry/out', lambda m: self.samples['extnav_output'].append((time.monotonic(), m)), 20)
-        self.create_subscription(State, '/uav1/mavros/state', lambda m: self.samples['fcu'].append((time.monotonic(), m)), 20)
+                        'sys_status': [], 'estimator': [], 'statustext': [], 'fcu_imu': []}
+        self.sim_time = None
+        self.create_subscription(Clock, '/clock', self._clock, 100)
+        self.create_subscription(Odometry, '/localization/odom', lambda m: self._record('odom', m), 20)
+        self.create_subscription(String, '/xq/p4/extnav/status', lambda m: self._record('extnav', m), 20)
+        self.create_subscription(Odometry, '/uav1/mavros/odometry/out', lambda m: self._record('extnav_output', m), 20)
+        self.create_subscription(State, '/uav1/mavros/state', lambda m: self._record('fcu', m), 20)
         best_effort = QoSProfile(depth=100, reliability=ReliabilityPolicy.BEST_EFFORT)
-        self.create_subscription(EstimatorStatus, '/uav1/mavros/estimator_status', lambda m: self.samples['estimator'].append((time.monotonic(), m)), best_effort)
-        self.create_subscription(StatusText, '/uav1/mavros/statustext/recv', lambda m: self.samples['statustext'].append((time.monotonic(), m)), best_effort)
-        self.create_subscription(Imu, '/uav1/mavros/imu/data', lambda m: self.samples['fcu_imu'].append((time.monotonic(), m)), best_effort)
+        self.create_subscription(SysStatus, '/uav1/mavros/sys_status', lambda m: self._record('sys_status', m), best_effort)
+        self.create_subscription(EstimatorStatus, '/uav1/mavros/estimator_status', lambda m: self._record('estimator', m), best_effort)
+        self.create_subscription(StatusText, '/uav1/mavros/statustext/recv', lambda m: self._record('statustext', m), best_effort)
+        self.create_subscription(Imu, '/uav1/mavros/imu/data', lambda m: self._record('fcu_imu', m), best_effort)
         self.stream_client = self.create_client(StreamRate, '/uav1/mavros/set_stream_rate')
         self.prearm_client = self.create_client(CommandLong, '/uav1/mavros/cmd/command')
+
+    def _clock(self, message):
+        self.sim_time = stamp_s(message.clock)
+
+    def _record(self, key, message):
+        self.samples[key].append((time.monotonic(), self.sim_time, message))
 
     def request_streams(self):
         if not self.stream_client.wait_for_service(timeout_sec=5.0):
@@ -63,9 +105,6 @@ def main():
     ap=argparse.ArgumentParser(); ap.add_argument('--seconds',type=float,default=30); ap.add_argument('--output',required=True); a=ap.parse_args()
     rclpy.init(); n=Monitor(); service_events=[]
     stream=n.request_streams()
-    if stream is not None:
-        rclpy.spin_until_future_complete(n, stream, timeout_sec=5.0)
-        service_events.append(service_event('stream_request', stream))
     start=time.monotonic(); end=start+a.seconds; next_prearm=start
     pending=[]
     while time.monotonic()<end and rclpy.ok():
@@ -75,21 +114,39 @@ def main():
             if future is not None: pending.append((now-start,future))
             next_prearm += 10.0
         rclpy.spin_once(n, timeout_sec=0.2)
+    finished=time.monotonic()
+    service_events.append(service_event('stream_request', stream))
     for elapsed,future in pending:
         service_events.append(service_event('prearm_check', future, elapsed_s=elapsed))
-    def metric(values):
-        times=[x[0] for x in values]; span=(max(times)-min(times)) if len(times)>1 else 0
-        return {'count':len(values),'rate_hz':(len(times)-1)/span if span else 0.0,
-                'first_monotonic_s':times[0] if times else None,'last_monotonic_s':times[-1] if times else None,
-                'window_s':span}
     ext=[]
-    for _,m in n.samples['extnav']:
+    for _,_,m in n.samples['extnav']:
         try: ext.append(json.loads(m.data))
         except Exception: pass
-    fcu=[m for _,m in n.samples['fcu']]
-    texts=[{'monotonic_s':t,'severity':int(m.severity),'text':m.text} for t,m in n.samples['statustext']]
-    estimator=[m for _,m in n.samples['estimator']]
-    result={'schema_version':1,'window_s':a.seconds,'metrics':{k:metric(v) for k,v in n.samples.items()},
+    fcu=[m for _,_,m in n.samples['fcu']]
+    texts=[{'elapsed_s':t-start,'severity':int(m.severity),'text':m.text} for t,_,m in n.samples['statustext']]
+    estimator=[m for _,_,m in n.samples['estimator']]
+    sys_status=[{'elapsed_s':t-start, 'present':int(m.sensors_present),
+                 'enabled':int(m.sensors_enabled), 'health':int(m.sensors_health),
+                 'prearm_enabled':bool(m.sensors_enabled & PREARM_CHECK),
+                 'prearm_healthy':bool(m.sensors_health & PREARM_CHECK),
+                 'vision_enabled':bool(m.sensors_enabled & VISION_POSITION),
+                 'vision_healthy':bool(m.sensors_health & VISION_POSITION)}
+                for t,_,m in n.samples['sys_status']]
+    metrics={k:sample_metric(v,start,finished,header=k in ('odom','extnav_output','fcu_imu'),
+                              age=k == 'odom') for k,v in n.samples.items()}
+    continuity = {
+        'odom': metrics['odom']['count'] > 1 and metrics['odom']['max_receive_gap_s'] <= 0.35
+                and metrics['odom']['max_stamp_gap_s'] <= 0.35
+                and metrics['odom']['nonincreasing_stamps'] == 0,
+        'extnav': metrics['extnav']['count'] > 1 and metrics['extnav']['max_receive_gap_s'] <= 0.50,
+        'extnav_output': metrics['extnav_output']['count'] > 1
+                and metrics['extnav_output']['max_receive_gap_s'] <= 0.35
+                and metrics['extnav_output']['nonincreasing_stamps'] == 0,
+        'fcu': metrics['fcu']['count'] > 1 and metrics['fcu']['max_receive_gap_s'] <= 2.5,
+        'sys_status': metrics['sys_status']['count'] > 1 and metrics['sys_status']['max_receive_gap_s'] <= 2.5,
+    }
+    result={'schema_version':2,'window_s':a.seconds,'actual_window_s':finished-start,
+            'metrics':metrics, 'continuity':continuity,
             'extnav_healthy_count':sum(x.get('healthy') is True for x in ext),
             'extnav_unhealthy_count':sum(x.get('healthy') is False for x in ext),
             'extnav_last':ext[-1] if ext else None,
@@ -99,9 +156,24 @@ def main():
             'estimator_last':({name:bool(getattr(estimator[-1],name)) for name in (
                 'attitude_status_flag','velocity_horiz_status_flag','velocity_vert_status_flag',
                 'pos_horiz_rel_status_flag','pos_vert_abs_status_flag','accel_error_status_flag')} if estimator else None),
+            'sys_status':sys_status,
+            'prearm_final_healthy':bool(sys_status and sys_status[-1]['prearm_healthy']),
+            'vision_final_healthy':bool(sys_status and sys_status[-1]['vision_healthy']),
+            'first_prearm_healthy_elapsed_s':next((x['elapsed_s'] for x in sys_status if x['prearm_healthy']),None),
+            'first_vision_healthy_elapsed_s':next((x['elapsed_s'] for x in sys_status if x['vision_healthy']),None),
             'statustext':texts,
             'arm_or_takeoff_texts':[x for x in texts if 'arming motors' in x['text'].lower() or 'takeoff' in x['text'].lower()],
             'service_events':service_events}
+    result['criteria'] = {
+        'continuous_required_streams': all(continuity.values()),
+        'external_nav_continuously_healthy': bool(ext) and result['extnav_unhealthy_count'] == 0,
+        'fcu_connected_and_never_armed': bool(fcu) and result['fcu_connected_count'] == len(fcu)
+                                         and result['fcu_armed_count'] == 0,
+        'no_arm_or_takeoff_evidence': not result['arm_or_takeoff_texts'],
+        'fcu_prearm_final_healthy': result['prearm_final_healthy'],
+        'fcu_vision_final_healthy': result['vision_final_healthy'],
+    }
+    result['passed'] = all(result['criteria'].values())
     open(a.output,'w').write(json.dumps(result,indent=2)+'\n'); n.destroy_node(); rclpy.shutdown()
-    return 0 if all(result['metrics'][key]['count']>0 for key in ('odom','extnav','extnav_output','fcu')) and result['fcu_armed_count']==0 and not result['arm_or_takeoff_texts'] else 1
+    return 0 if result['passed'] else 1
 if __name__=='__main__': raise SystemExit(main())

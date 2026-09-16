@@ -7,7 +7,7 @@ import impact
 from impact_scenarios import scenario_geometry, generate
 from impact_runtime_audit import check_graph
 from impact_runtime_audit import check_extnav
-from startup_smoke_monitor import service_event
+from startup_smoke_monitor import sample_metric, service_event
 
 
 def test_seed_changes_real_geometry_and_paired_arms_share_world(tmp_path):
@@ -93,6 +93,20 @@ def test_smoke_service_events_support_empty_and_command_responses():
     assert not service_event('prearm_check', Future(command))['success']
     assert 'RuntimeError' in service_event('stream_request', Future(error=RuntimeError('failed')))['error']
     assert not service_event('stream_request', Future(done=False))['completed']
+
+
+def test_smoke_metric_reports_continuity_and_header_anomalies():
+    def message(stamp):
+        stamp_value = type('Stamp', (), {'sec': int(stamp), 'nanosec': int(stamp % 1 * 1e9)})()
+        return type('Message', (), {'header': type('Header', (), {'stamp': stamp_value})()})()
+    values = [(10.1, 1.2, message(1.0)), (10.3, 1.4, message(1.2)),
+              (10.8, 1.5, message(1.1))]
+    metric = sample_metric(values, 10.0, 11.0, header=True, age=True)
+    assert metric['max_receive_gap_s'] == pytest.approx(0.5)
+    assert metric['first_delay_s'] == pytest.approx(0.1)
+    assert metric['last_silence_s'] == pytest.approx(0.2)
+    assert metric['nonincreasing_stamps'] == 1
+    assert metric['max_data_age_s'] == pytest.approx(0.4)
 
 
 def test_busy_port_is_not_stolen(monkeypatch,tmp_path):
