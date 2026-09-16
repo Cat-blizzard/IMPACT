@@ -1,5 +1,11 @@
 # 复现状态与问题日志
 
+## 2026-09-17：CPU P4 最终开发验收
+
+冻结运行提交 `b88288f912797538dc0688b50a56fbc3c3fc668f` 已在 Mesa llvmpipe CPU 软件渲染下完成一次严格不解锁冒烟及三次独立冷启动 P4 正常任务；任务、定位、落地解除武装、bag/DataFlash 可读性和退出清理均通过。失败及中间运行全部保留，没有与最终组混算。完整指标、复现命令、哈希、尝试清单和限制见 [CPU P4 最终开发验收](CPU_P4_FINAL_VALIDATION_20260917.md) 与 [机器可读索引](../evidence/P4_CPU_20260917/validation-index.json)。
+
+该结论仅覆盖 CPU SITL P4。GPU P4、旧 P5 FAIL、1.2 m `UNVERIFIED_FLIGHT`、阶段 A/B、正式矩阵和实机状态均未因此改变。
+
 ## 记录规则
 
 本日志补充原仓库的历史阶段记录，不替换、删除或追改 `evidence/`、原阶段报告和原 README 状态表。
