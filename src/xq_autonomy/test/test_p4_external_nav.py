@@ -1,4 +1,5 @@
 import math
+import time
 
 import pytest
 
@@ -131,7 +132,8 @@ def test_inflight_failure_routes_to_landing_when_armed() -> None:
     node.phase = "ASCEND"
     node.task_failure_reason = None
     node.have_state = True
-    node.fcu_state = type("State", (), {"armed": True})()
+    node.fcu_state = type("State", (), {"armed": True, "mode": "GUIDED"})()
+    node.fcu_state_last_wall = time.monotonic()
     transitions = []
     events = []
     node._transition = lambda phase, detail: (transitions.append((phase, detail)), setattr(node, "phase", phase))
@@ -150,6 +152,7 @@ def test_preflight_failure_can_finish_without_armed_flight() -> None:
     node.task_failure_reason = None
     node.have_state = True
     node.fcu_state = type("State", (), {"armed": False})()
+    node.fcu_state_last_wall = time.monotonic()
     result = []
     node._finish = lambda status, reason: result.append((status, reason))
     P4MissionNode._failure_to_land(node, "ExternalNav did not become healthy")
@@ -163,6 +166,7 @@ def test_failure_does_not_override_existing_landing_or_unknown_state() -> None:
     node.task_failure_reason = None
     node.have_state = True
     node.fcu_state = type("State", (), {"armed": True})()
+    node.fcu_state_last_wall = time.monotonic()
     node._transition = lambda *_: (_ for _ in ()).throw(AssertionError("must preserve LAND"))
     node._finish = lambda *_: (_ for _ in ()).throw(AssertionError("must not finalize LAND"))
     P4MissionNode._failure_to_land(node, "mission timeout in LAND")
@@ -170,7 +174,55 @@ def test_failure_does_not_override_existing_landing_or_unknown_state() -> None:
 
     node.phase = "TRACK_SQUARE"
     node.have_state = False
-    result = []
-    node._finish = lambda status, reason: result.append((status, reason))
+    transitions = []
+    events = []
+    node._transition = lambda phase, detail: (transitions.append((phase, detail)), setattr(node, "phase", phase))
+    node._event = lambda kind, detail: events.append((kind, detail))
     P4MissionNode._failure_to_land(node, "mission timeout in TRACK_SQUARE")
-    assert result == [("FAIL", "mission timeout in TRACK_SQUARE")]
+    assert node.phase == "FAILSAFE_WAIT"
+    assert transitions == [("FAILSAFE_WAIT", "mission timeout in TRACK_SQUARE")]
+    assert events[-1][0] == "TERMINATION_UNCONFIRMED"
+
+
+def test_health_loss_routes_fresh_armed_fcu_to_land() -> None:
+    node = object.__new__(P4MissionNode)
+    node.finalized = False
+    node.phase = "ASCEND"
+    node.task_failure_reason = None
+    node.have_state = True
+    node.fcu_state = type("State", (), {"armed": True, "mode": "GUIDED"})()
+    node.fcu_state_last_wall = time.monotonic()
+    transitions = []
+    events = []
+    node._transition = lambda phase, detail: (transitions.append((phase, detail)), setattr(node, "phase", phase))
+    node._event = lambda kind, detail: events.append((kind, detail))
+    P4MissionNode._flight_health_loss(node, {"reasons": ["extnav:source_stale"]})
+    assert node.phase == "LAND"
+    assert transitions == [("LAND", "flight health lost: extnav:source_stale")]
+    assert events == [("TASK_FAILURE", "flight health lost: extnav:source_stale")]
+
+
+def test_health_loss_preserves_fcu_already_in_land() -> None:
+    node = object.__new__(P4MissionNode)
+    node.finalized = False
+    node.phase = "ASCEND"
+    node.task_failure_reason = None
+    node.have_state = True
+    node.fcu_state = type("State", (), {"armed": True, "mode": "LAND"})()
+    node.fcu_state_last_wall = time.monotonic()
+    transitions = []
+    events = []
+    node._transition = lambda phase, detail: (transitions.append((phase, detail)), setattr(node, "phase", phase))
+    node._event = lambda kind, detail: events.append((kind, detail))
+    P4MissionNode._flight_health_loss(node, {"reasons": ["fcu:ekf variance"]})
+    assert node.phase == "FAILSAFE_WAIT"
+    assert transitions == [("FAILSAFE_WAIT", "flight health lost: fcu:ekf variance")]
+    assert events[-1] == ("FAILSAFE_PRESERVED", "FCU already in LAND; no mode or takeoff request")
+
+
+def test_stale_fcu_state_cannot_be_used_as_termination_confirmation() -> None:
+    node = object.__new__(P4MissionNode)
+    node.have_state = True
+    node.fcu_state = type("State", (), {"armed": False})()
+    node.fcu_state_last_wall = time.monotonic() - 10.0
+    assert not P4MissionNode._fcu_state_is_fresh(node)

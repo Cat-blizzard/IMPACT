@@ -9,6 +9,16 @@ import sys
 
 MARKER = ".impact-build-manifest.json"
 
+# Keep the flight entrypoints bound to their actual installed modules.  The
+# generic IMPACT runner and the dedicated P4 runner intentionally have
+# different result schemas and launch graphs, so checking only ExternalNav is
+# insufficient to identify what a run will execute.
+REQUIRED_ENTRYPOINTS = {
+    "xq_p4_external_nav": "xq_autonomy.p4_external_nav_node:main",
+    "xq_p4_mission": "xq_autonomy.p4_mission_node:main",
+    "impact_mission": "xq_autonomy.sitl_mission_node:main",
+}
+
 
 def sha256(path):
     h = hashlib.sha256()
@@ -48,6 +58,43 @@ def check_installed_python(root, install):
                 raise ValueError(f"installed Python differs from source: {target}")
             checked += 1
     return checked
+
+
+def resolve_runtime_entrypoints(install, expected_files):
+    """Resolve console-script metadata and Python origins in the sourced env."""
+    code = r'''
+import importlib, importlib.metadata, json, sys
+names = json.loads(sys.argv[1])
+dist = importlib.metadata.distribution("xq-autonomy")
+entries = {entry.name: entry.value for entry in dist.entry_points
+           if entry.group == "console_scripts" and entry.name in names}
+modules = {}
+for target in names.values():
+    module_name = target.split(":", 1)[0]
+    module = importlib.import_module(module_name)
+    modules[module_name] = str(module.__file__)
+print(json.dumps({"entries": entries, "modules": modules}))
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", code, json.dumps(REQUIRED_ENTRYPOINTS)],
+        check=True, capture_output=True, text=True, timeout=10,
+    )
+    resolved = json.loads(result.stdout)
+    if resolved.get("entries") != REQUIRED_ENTRYPOINTS:
+        raise ValueError(
+            f"installed console entrypoints differ: {resolved.get('entries')}"
+        )
+    module_paths = {}
+    for target in REQUIRED_ENTRYPOINTS.values():
+        module_name = target.split(":", 1)[0]
+        module = Path(resolved["modules"][module_name]).resolve()
+        if not module.is_relative_to(install):
+            raise ValueError(f"Python resolves {module_name} outside frozen install: {module}")
+        relative = module.relative_to(install).as_posix()
+        if relative not in expected_files:
+            raise ValueError(f"Python module is absent from frozen inventory: {module}")
+        module_paths[module_name] = str(module)
+    return {"console_scripts": REQUIRED_ENTRYPOINTS, "python_modules": module_paths}
 
 
 def verify(install, supplied_manifest, current_source_hash, current_git=None,
@@ -90,6 +137,7 @@ def verify(install, supplied_manifest, current_source_hash, current_git=None,
         if not module.is_relative_to(install) or module.relative_to(install).as_posix() not in expected:
             raise ValueError(f"Python resolves ExternalNav outside frozen inventory: {module}")
         resolved["external_nav_module"] = str(module)
+        resolved["flight_entrypoints"] = resolve_runtime_entrypoints(install, expected)
     return dict(passed=True, install_root=str(install), build_git=manifest["git"],
                 source_sha256=current_source_hash, manifest_sha256=sha256(manifest_path),
                 installed_files_checked=len(actual), resolved=resolved)

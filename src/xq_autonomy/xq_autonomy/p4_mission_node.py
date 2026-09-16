@@ -114,6 +114,7 @@ class P4MissionNode(Node):
         self.declare_parameter("prearm_timeout_s", 60.0)
         self.declare_parameter("prearm_check_interval_s", 5.0)
         self.declare_parameter("sys_status_max_age_s", 2.5)
+        self.declare_parameter("fcu_state_max_age_s", 2.5)
         self.declare_parameter("arm_confirmation_timeout_s", 8.0)
 
         prefix = str(self.get_parameter("mavros_prefix").value).rstrip("/")
@@ -166,6 +167,7 @@ class P4MissionNode(Node):
 
         self.fcu_state = State()
         self.have_state = False
+        self.fcu_state_last_wall = 0.0
         self.fcu_sys_status = SysStatus()
         self.have_sys_status = False
         self.sys_status_last_wall = 0.0
@@ -228,6 +230,7 @@ class P4MissionNode(Node):
     def _state_cb(self, message: State) -> None:
         self.fcu_state = message
         self.have_state = True
+        self.fcu_state_last_wall = time.monotonic()
 
     def _sys_status_cb(self, message: SysStatus) -> None:
         self.fcu_sys_status = message
@@ -622,20 +625,35 @@ class P4MissionNode(Node):
         if self.finalized or self.phase in ("WAIT_FCU", "VERIFY_NAV", "LAND", "DESCEND", "FAILSAFE_WAIT"):
             return
         reasons = ",".join(str(item) for item in snapshot.get("reasons", [])) or "unknown"
-        self.task_failure_reason = f"flight health lost: {reasons}"
-        self._transition("FAILSAFE_WAIT", self.task_failure_reason)
-        self._event("TASK_FAILURE", self.task_failure_reason)
+        self._failure_to_land(f"flight health lost: {reasons}")
 
     def _failure_to_land(self, reason: str) -> None:
         """Route an in-flight failure through landing and termination confirmation."""
         if self.finalized or self.phase in ("LAND", "DESCEND", "FAILSAFE_WAIT"):
             return
         self.task_failure_reason = reason
-        if self.have_state and self.fcu_state.armed:
+        if not self._fcu_state_is_fresh():
+            self._transition("FAILSAFE_WAIT", reason)
+            self._event("TASK_FAILURE", reason)
+            self._event("TERMINATION_UNCONFIRMED", "FCU state is unavailable or stale; no safe state assumption")
+        elif self.fcu_state.armed and str(self.fcu_state.mode).upper() == "LAND":
+            self._transition("FAILSAFE_WAIT", reason)
+            self._event("TASK_FAILURE", reason)
+            self._event("FAILSAFE_PRESERVED", "FCU already in LAND; no mode or takeoff request")
+        elif self.fcu_state.armed:
             self._transition("LAND", reason)
             self._event("TASK_FAILURE", reason)
         else:
             self._finish("FAIL", reason)
+
+    def _fcu_state_is_fresh(self) -> bool:
+        if not self.have_state or not self.fcu_state_last_wall:
+            return False
+        try:
+            max_age = float(self.get_parameter("fcu_state_max_age_s").value)
+        except (AttributeError, TypeError, ValueError):
+            max_age = 2.5
+        return time.monotonic() - self.fcu_state_last_wall <= max_age
 
     def _distance_to_target(self) -> float:
         if self.target is None:
@@ -657,7 +675,8 @@ class P4MissionNode(Node):
         self.finalized = True
         self.phase = "DONE" if status == "PASS" else "FAILED"
         self._event(status, reason)
-        termination_confirmed = bool(self.have_state and not self.fcu_state.armed)
+        state_fresh = self._fcu_state_is_fresh()
+        termination_confirmed = bool(state_fresh and not self.fcu_state.armed)
         if termination_confirmed:
             self.termination_reason = self.termination_reason or "FCU disarmed"
         else:
@@ -705,6 +724,9 @@ class P4MissionNode(Node):
                 "reason": self.termination_reason,
                 "armed": bool(self.fcu_state.armed),
                 "mode": self.fcu_state.mode,
+                "state_fresh": state_fresh,
+                "state_age_s": (time.monotonic() - self.fcu_state_last_wall
+                                 if self.fcu_state_last_wall else None),
             },
             "health_samples": self.health_samples,
             "final": {
@@ -753,7 +775,7 @@ class P4MissionNode(Node):
                     return
 
         if self.phase == "FAILSAFE_WAIT":
-            if self.have_state and not self.fcu_state.armed:
+            if self._fcu_state_is_fresh() and not self.fcu_state.armed:
                 self.termination_reason = "FCU disarmed after health loss"
                 self._event("TERMINATION_CONFIRMED", self.termination_reason)
                 self._finish("FAIL", f"{self.task_failure_reason or 'flight health lost'}; termination confirmed")
