@@ -5,7 +5,7 @@ import re
 import sys
 
 
-def check_graph(truth, setpoint):
+def check_graph(truth, setpoint, require_evaluator=True):
     # ros2 topic info -v sections name endpoint type and node name.
     subscribers = []
     for section in re.split(r"\n(?=Node name:)", truth):
@@ -15,8 +15,9 @@ def check_graph(truth, setpoint):
     allowed = all(name == "impact_evaluator" or name.startswith("rosbag2_recorder") for name in subscribers)
     count = re.search(r"Publisher count: (\d+)", setpoint)
     owner = "Node name: impact_arbiter" in setpoint
+    expected = "impact_evaluator" in subscribers if require_evaluator else bool(subscribers)
     return dict(truth_subscribers=subscribers,
-        truth_isolation=allowed and "impact_evaluator" in subscribers,
+        truth_isolation=allowed and expected,
         sole_setpoint_publisher=bool(count and count[1] == "1" and owner))
 
 
@@ -69,7 +70,9 @@ def renderer_maps(pid):
 
 def main():
     run, profile = Path(sys.argv[1]), sys.argv[2]
-    data = check_graph((run/"truth-graph.txt").read_text(), (run/"setpoint-graph.txt").read_text())
+    smoke = "--smoke" in sys.argv
+    data = check_graph((run/"truth-graph.txt").read_text(), (run/"setpoint-graph.txt").read_text(),
+                       require_evaluator=not smoke)
     status_graph = run/"extnav-status-graph.txt"
     output_graph = run/"extnav-output-graph.txt"
     data["extnav"] = check_extnav(
@@ -77,7 +80,6 @@ def main():
         output_graph.read_text() if output_graph.exists() else "",
     )
     data.update(renderer_maps(int((run/"gazebo.pid").read_text())))
-    smoke = "--smoke" in sys.argv
     data["passed"] = (data["truth_isolation"] and (smoke or data["sole_setpoint_publisher"])
                       and data["extnav"]["status_single_publisher"]
                       and data["extnav"]["output_single_adapter_publisher"]

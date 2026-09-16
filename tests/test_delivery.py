@@ -50,6 +50,10 @@ def test_graph_audit_checks_endpoint_owners():
     assert result["truth_isolation"] and result["sole_setpoint_publisher"]
     assert not check_graph(truth+"\nNode name: impact_supervisor\nEndpoint type: SUBSCRIPTION\n",setpoint)["truth_isolation"]
     assert not check_graph(truth,setpoint.replace("count: 1","count: 2"))["sole_setpoint_publisher"]
+    recorder = "Publisher count: 1\n\nNode name: rosbag2_recorder\nEndpoint type: SUBSCRIPTION\n"
+    assert check_graph(recorder, setpoint, require_evaluator=False)["truth_isolation"]
+    assert not check_graph(recorder, setpoint, require_evaluator=True)["truth_isolation"]
+    assert not check_graph("Publisher count: 1\n", setpoint, require_evaluator=False)["truth_isolation"]
 
 
 def test_extnav_graph_checks_direction_and_unique_endpoints():

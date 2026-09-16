@@ -34,6 +34,9 @@ cleanup() {
   : >"$run/cleanup-processes.jsonl"
   cleanup_initial=()
   cleanup_signals=()
+  group_running() {
+    ps -eo pgid=,stat= | awk -v group="$1" '$1 == group && $2 !~ /^Z/ {found=1} END {exit !found}'
+  }
   for index in "${!pids[@]}"; do
     pid="${pids[index]}"
     initial_alive=false
@@ -53,7 +56,7 @@ cleanup() {
     [[ "${labels[index]}" == sitl && "${cleanup_initial[index]}" == true ]] || continue
     kill -TERM "${pids[index]}" 2>/dev/null || true
     for _ in {1..5}; do
-      pgrep -g "${pids[index]}" >/dev/null || break
+      group_running "${pids[index]}" || break
       sleep 1
     done
   done
@@ -63,19 +66,19 @@ cleanup() {
   done
   for _ in {1..10}; do
     alive=false
-    for pid in "${pids[@]}"; do pgrep -g "$pid" >/dev/null && alive=true; done
+    for pid in "${pids[@]}"; do group_running "$pid" && alive=true; done
     [[ "$alive" == false ]] && break
     sleep 1
   done
-  for pid in "${pids[@]}"; do pgrep -g "$pid" >/dev/null && kill -TERM -- "-$pid" 2>/dev/null || true; done
+  for pid in "${pids[@]}"; do group_running "$pid" && kill -TERM -- "-$pid" 2>/dev/null || true; done
   sleep 2
   for index in "${!pids[@]}"; do
     pid="${pids[index]}"
-    pgrep -g "$pid" >/dev/null && kill -KILL -- "-$pid" 2>/dev/null || true
+    group_running "$pid" && kill -KILL -- "-$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null
     wait_status=$?
     residual=false
-    pgrep -g "$pid" >/dev/null && residual=true
+    group_running "$pid" && residual=true
     python3 - "${labels[index]}" "$pid" "${cleanup_initial[index]}" \
       "${cleanup_signals[index]}" "$wait_status" "$residual" >>"$run/cleanup-processes.jsonl" <<'PY'
 import json,sys
