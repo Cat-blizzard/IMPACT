@@ -11,8 +11,8 @@ from pathlib import Path
 import rclpy
 from geographic_msgs.msg import GeoPointStamped
 from geometry_msgs.msg import PoseStamped
-from mavros_msgs.msg import State, StatusText
-from mavros_msgs.srv import CommandBool, CommandTOL, SetMode, StreamRate
+from mavros_msgs.msg import State, StatusText, SysStatus
+from mavros_msgs.srv import CommandBool, CommandLong, CommandTOL, SetMode, StreamRate
 from nav_msgs.msg import Odometry
 from rcl_interfaces.msg import ParameterType
 from rcl_interfaces.srv import GetParameters
@@ -52,6 +52,13 @@ _FCU_FAULT_TOKENS = (
     "ekf failsafe",
     "potential thrust loss",
 )
+
+PREARM_CHECK = 1 << 28
+VISION_POSITION = 1 << 7
+
+
+def _sensor_enabled_and_healthy(status: SysStatus, mask: int) -> bool:
+    return bool(status.sensors_enabled & mask) and bool(status.sensors_health & mask)
 
 
 def _fcu_fault_reason(text: str) -> str | None:
@@ -104,6 +111,10 @@ class P4MissionNode(Node):
         self.declare_parameter("health_odom_max_age_s", 0.7)
         self.declare_parameter("health_fault_window_s", 2.0)
         self.declare_parameter("failsafe_termination_timeout_s", 90.0)
+        self.declare_parameter("prearm_timeout_s", 60.0)
+        self.declare_parameter("prearm_check_interval_s", 5.0)
+        self.declare_parameter("sys_status_max_age_s", 2.5)
+        self.declare_parameter("arm_confirmation_timeout_s", 8.0)
 
         prefix = str(self.get_parameter("mavros_prefix").value).rstrip("/")
         qos = QoSProfile(
@@ -113,6 +124,7 @@ class P4MissionNode(Node):
         )
         reliable = QoSProfile(depth=20, reliability=ReliabilityPolicy.RELIABLE)
         self.create_subscription(State, f"{prefix}/state", self._state_cb, qos)
+        self.create_subscription(SysStatus, f"{prefix}/sys_status", self._sys_status_cb, qos)
         self.create_subscription(Odometry, f"{prefix}/local_position/odom", self._odom_cb, qos)
         self.create_subscription(
             String,
@@ -145,6 +157,7 @@ class P4MissionNode(Node):
         self.takeoff_client = self.create_client(CommandTOL, f"{prefix}/cmd/takeoff")
         self.land_client = self.create_client(CommandTOL, f"{prefix}/cmd/land")
         self.stream_client = self.create_client(StreamRate, f"{prefix}/set_stream_rate")
+        self.prearm_client = self.create_client(CommandLong, f"{prefix}/cmd/command")
         # MAVROS2 exposes pulled FCU parameters through its standard ROS 2
         # parameter service instead of the deprecated MAVROS ParamGet service.
         self.param_client = self.create_client(
@@ -153,6 +166,9 @@ class P4MissionNode(Node):
 
         self.fcu_state = State()
         self.have_state = False
+        self.fcu_sys_status = SysStatus()
+        self.have_sys_status = False
+        self.sys_status_last_wall = 0.0
         self.have_odom = False
         self.have_raw_odom = False
         self.current_xyz = (0.0, 0.0, 0.0)
@@ -196,6 +212,9 @@ class P4MissionNode(Node):
         self.phase_started = time.monotonic()
         self.started = self.phase_started
         self.last_request = 0.0
+        self.last_prearm_request = 0.0
+        self.arm_request_count = 0
+        self.arm_request_wall: float | None = None
         self.last_origin_publish = 0.0
         self.arrival_started: float | None = None
         self.waypoints: list[tuple[float, float, float]] = []
@@ -209,6 +228,11 @@ class P4MissionNode(Node):
     def _state_cb(self, message: State) -> None:
         self.fcu_state = message
         self.have_state = True
+
+    def _sys_status_cb(self, message: SysStatus) -> None:
+        self.fcu_sys_status = message
+        self.have_sys_status = True
+        self.sys_status_last_wall = time.monotonic()
 
     def _odom_cb(self, message: Odometry) -> None:
         p = message.pose.pose.position
@@ -327,7 +351,8 @@ class P4MissionNode(Node):
         self.setpoint_publisher.publish(message)
 
     def _send_command(self, kind: str) -> None:
-        if self.pending_command is not None or time.monotonic() - self.last_request < 2.0:
+        now = time.monotonic()
+        if self.pending_command is not None or now - self.last_request < 2.0:
             return
         if kind == "stream":
             if not self.stream_client.service_is_ready():
@@ -344,11 +369,21 @@ class P4MissionNode(Node):
             request.custom_mode = "GUIDED"
             future = self.mode_client.call_async(request)
         elif kind == "arm":
+            if self.arm_request_count:
+                return
             if not self.arm_client.service_is_ready():
                 return
             request = CommandBool.Request()
             request.value = True
             future = self.arm_client.call_async(request)
+            self.arm_request_count += 1
+            self.arm_request_wall = now
+        elif kind == "prearm":
+            interval = float(self.get_parameter("prearm_check_interval_s").value)
+            if now - self.last_prearm_request < interval or not self.prearm_client.service_is_ready():
+                return
+            future = self.prearm_client.call_async(CommandLong.Request(command=401))
+            self.last_prearm_request = now
         elif kind == "takeoff":
             if not self.takeoff_client.service_is_ready():
                 return
@@ -374,10 +409,10 @@ class P4MissionNode(Node):
             timeout_s = float(self.get_parameter("command_timeout_s").value)
             if time.monotonic() - self.last_request > timeout_s:
                 self.pending_command = None
-                self._event(
-                    "RESPONSE",
-                    f"{kind} timeout after {timeout_s:.1f}s; retrying",
-                )
+                retry = kind != "arm"
+                self._event("RESPONSE", f"{kind} timeout after {timeout_s:.1f}s; retry={retry}")
+                if kind == "arm":
+                    self._failure_to_land("ARM response timeout; automatic retry disabled")
             return
         self.pending_command = None
         try:
@@ -387,9 +422,13 @@ class P4MissionNode(Node):
             )
         except Exception as exc:
             self._event("RESPONSE", f"{kind} exception={exc!r}")
+            if kind == "arm":
+                self._failure_to_land("ARM response exception; automatic retry disabled")
             return
         self._event("RESPONSE", f"{kind} accepted={accepted}")
         if not accepted:
+            if kind == "arm":
+                self._failure_to_land("ARM rejected; automatic retry disabled")
             return
         if kind == "stream" and self.phase == "SET_STREAM":
             self._transition("VERIFY_NAV", "MAVLink streams requested")
@@ -445,7 +484,7 @@ class P4MissionNode(Node):
             self.pending_param = (name, self.param_client.call_async(request))
             self.last_param_request = now
 
-    def _health_snapshot(self) -> dict[str, object]:
+    def _health_snapshot(self, require_prearm: bool = False) -> dict[str, object]:
         now = time.monotonic()
         reasons: list[str] = []
         status_age = now - self.extnav_last_wall if self.extnav_last_wall else math.inf
@@ -473,6 +512,20 @@ class P4MissionNode(Node):
             reasons.append("fcu_odom_stamp_nonmonotonic")
         if not self.have_state or not self.fcu_state.connected:
             reasons.append("fcu_disconnected")
+        sys_status_age = now - self.sys_status_last_wall if self.have_sys_status else math.inf
+        prearm_healthy = self.have_sys_status and _sensor_enabled_and_healthy(
+            self.fcu_sys_status, PREARM_CHECK
+        )
+        vision_healthy = self.have_sys_status and _sensor_enabled_and_healthy(
+            self.fcu_sys_status, VISION_POSITION
+        )
+        if require_prearm:
+            if sys_status_age > float(self.get_parameter("sys_status_max_age_s").value):
+                reasons.append("fcu_sys_status_stale")
+            if not prearm_healthy:
+                reasons.append("fcu_prearm_unhealthy")
+            if not vision_healthy:
+                reasons.append("fcu_vision_unhealthy")
         if self.last_fcu_fault is not None:
             fault_age = now - self.started - float(self.last_fcu_fault["elapsed_s"])
             if fault_age <= float(self.get_parameter("health_fault_window_s").value):
@@ -510,11 +563,22 @@ class P4MissionNode(Node):
                 "mode": str(self.fcu_state.mode),
                 "system_status": int(self.fcu_state.system_status),
             },
+            "fcu_sys_status": {
+                "received": self.have_sys_status,
+                "age_s": sys_status_age if math.isfinite(sys_status_age) else None,
+                "sensors_present": int(self.fcu_sys_status.sensors_present),
+                "sensors_enabled": int(self.fcu_sys_status.sensors_enabled),
+                "sensors_health": int(self.fcu_sys_status.sensors_health),
+                "prearm_healthy": bool(prearm_healthy),
+                "vision_healthy": bool(vision_healthy),
+            },
             "last_fcu_fault": self.last_fcu_fault,
         }
 
-    def _observe_health(self, require_params: bool) -> tuple[bool, dict[str, object]]:
-        snapshot = self._health_snapshot()
+    def _observe_health(
+        self, require_params: bool, require_prearm: bool = False
+    ) -> tuple[bool, dict[str, object]]:
+        snapshot = self._health_snapshot(require_prearm=require_prearm)
         reasons = list(snapshot["reasons"])
         if require_params and len(self.verified_params) != len(self.REQUIRED_PARAMS):
             reasons.append("fcu_parameters_incomplete")
@@ -606,8 +670,10 @@ class P4MissionNode(Node):
             "generated_at_utc": datetime.now(timezone.utc).isoformat(),
             "elapsed_s": round(time.monotonic() - self.started, 3),
             "command_timeout_s": float(self.get_parameter("command_timeout_s").value),
+            "arm_request_count": self.arm_request_count,
             "verified_parameters": self.verified_params,
             "external_nav": self.extnav_status,
+            "fcu_sys_status": self._health_snapshot(require_prearm=False)["fcu_sys_status"],
             "health_gate": {
                 "required_consecutive_samples": self.health_gate.required_samples,
                 "last_consecutive_samples": self.health_gate.consecutive_samples,
@@ -627,6 +693,8 @@ class P4MissionNode(Node):
                 "takeoff_and_hover": any(event["phase"] == "HOVER" for event in self.events),
                 "square_and_return": len(self.completed_waypoints) == 4,
                 "landed_and_disarmed": not bool(self.fcu_state.armed),
+                "prearm_gate_passed": any(event["kind"] == "PREARM_GATE_PASS" for event in self.events),
+                "single_arm_request": self.arm_request_count == 1,
             },
             "task_result": {
                 "success": status == "PASS",
@@ -678,7 +746,7 @@ class P4MissionNode(Node):
                 return
 
         if self.phase in ("SET_GUIDED", "ARM", "TAKEOFF", "ASCEND", "HOVER", "TRACK_SQUARE"):
-            _, snapshot = self._observe_health(require_params=False)
+            _, snapshot = self._observe_health(require_params=False, require_prearm=True)
             if not bool(snapshot["healthy_for_gate"]):
                 self._flight_health_loss(snapshot)
                 if self.phase == "FAILSAFE_WAIT":
@@ -705,10 +773,19 @@ class P4MissionNode(Node):
             if self.finalized:
                 return
             if self._nav_ready():
-                self.target = self.current_xyz
-                self._transition("SET_GUIDED", "GPS disabled, EKF3 ExternalNav sources and LIO stream verified")
+                self._transition("WAIT_PREARM", "ExternalNav and FCU parameters verified")
             elif now - self.phase_started > 90.0:
                 self._finish("FAIL", "ExternalNav did not become healthy or parameters were not verified")
+        elif self.phase == "WAIT_PREARM":
+            stable, _ = self._observe_health(require_params=True, require_prearm=True)
+            if stable:
+                self.target = self.current_xyz
+                self._event("PREARM_GATE_PASS", "FCU PREARM and VISION health confirmed")
+                self._transition("SET_GUIDED", "FCU is armable with healthy ExternalNav")
+            elif now - self.phase_started > float(self.get_parameter("prearm_timeout_s").value):
+                self._finish("FAIL", "FCU prearm health did not become ready before timeout")
+            else:
+                self._send_command("prearm")
         elif self.phase == "SET_GUIDED":
             if self.fcu_state.mode == "GUIDED":
                 self._transition("ARM", "GUIDED confirmed")
@@ -720,6 +797,10 @@ class P4MissionNode(Node):
                 altitude = float(self.get_parameter("takeoff_altitude_m").value)
                 self.target = (self.origin_xyz[0], self.origin_xyz[1], self.origin_xyz[2] + altitude)
                 self._transition("TAKEOFF", "armed with ExternalNav")
+            elif self.arm_request_wall is not None and now - self.arm_request_wall > float(
+                self.get_parameter("arm_confirmation_timeout_s").value
+            ):
+                self._finish("FAIL", "ARM was not confirmed; automatic retry disabled")
             else:
                 self._send_command("arm")
         elif self.phase == "TAKEOFF":

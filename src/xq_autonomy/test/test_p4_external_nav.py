@@ -3,6 +3,7 @@ import math
 import pytest
 
 from nav_msgs.msg import Odometry
+from mavros_msgs.msg import SysStatus
 from rcl_interfaces.msg import ParameterType
 
 from xq_autonomy.p4_external_nav_node import (
@@ -14,6 +15,9 @@ from xq_autonomy.p4_mission_node import (
     ConsecutiveHealthGate,
     P4MissionNode,
     _fcu_fault_reason,
+    _sensor_enabled_and_healthy,
+    PREARM_CHECK,
+    VISION_POSITION,
 )
 
 
@@ -79,6 +83,28 @@ def test_health_gate_requires_new_consecutive_samples_and_resets_on_fault() -> N
     assert gate.observe(True, [], sample_id=5) is False
     assert gate.observe(True, [], sample_id=6) is False
     assert gate.observe(True, [], sample_id=7) is True
+
+
+def test_fcu_health_requires_enabled_and_healthy_bits() -> None:
+    status = SysStatus()
+    status.sensors_enabled = PREARM_CHECK | VISION_POSITION
+    status.sensors_health = VISION_POSITION
+    assert not _sensor_enabled_and_healthy(status, PREARM_CHECK)
+    assert _sensor_enabled_and_healthy(status, VISION_POSITION)
+    status.sensors_health |= PREARM_CHECK
+    assert _sensor_enabled_and_healthy(status, PREARM_CHECK)
+
+
+def test_arm_command_is_single_attempt() -> None:
+    node = object.__new__(P4MissionNode)
+    node.pending_command = None
+    node.last_request = 0.0
+    node.arm_request_count = 1
+    node.arm_client = type('Client', (), {
+        'service_is_ready': lambda self: (_ for _ in ()).throw(AssertionError('must not retry'))
+    })()
+    P4MissionNode._send_command(node, 'arm')
+    assert node.arm_request_count == 1
 
 
 @pytest.mark.parametrize(
