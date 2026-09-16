@@ -408,6 +408,7 @@ timeout 15 ros2 service list --no-daemon -t >"${run_dir}/ros-services.txt" 2>&1
 timeout 15 gz topic -l >"${run_dir}/gz-topics.txt" 2>&1
 graph_probe /xq/p4/extnav/status "${run_dir}/extnav-status-graph.txt"
 graph_probe /uav1/mavros/odometry/out "${run_dir}/external-nav-topic-graph.txt"
+graph_probe /uav1/mavros/odometry/in "${run_dir}/mavros-odometry-in-graph.txt"
 graph_probe /xq/eval/p4/ground_truth "${run_dir}/ground-truth-topic-graph.txt"
 
 python3 - "${script_dir}" "${run_dir}" <<'PY'
@@ -417,8 +418,9 @@ from impact_runtime_audit import _endpoints, check_extnav
 run = pathlib.Path(sys.argv[2])
 status = (run / "extnav-status-graph.txt").read_text()
 output = (run / "external-nav-topic-graph.txt").read_text()
+identity = (run / "mavros-odometry-in-graph.txt").read_text()
 truth = (run / "ground-truth-topic-graph.txt").read_text()
-extnav = check_extnav(status, output)
+extnav = check_extnav(status, output, identity)
 recorder_participants = {x["participant_gid"] for x in extnav["output_subscribers"]
                          if x["node"].startswith("rosbag2_recorder")}
 truth_subscribers = _endpoints(truth, "SUBSCRIPTION")

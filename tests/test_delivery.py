@@ -76,6 +76,28 @@ def test_extnav_graph_checks_direction_and_unique_endpoints():
     assert not check_extnav(duplicate, output)["status_single_publisher"]
 
 
+def test_extnav_graph_resolves_unknown_mavros_endpoint_only_by_participant_gid():
+    status = ("Publisher count: 1\nNode name: xq_p4_external_nav\n"
+              "Endpoint type: PUBLISHER\nGID: aa\n")
+    output = ("Publisher count: 1\nNode name: xq_p4_external_nav\n"
+              "Endpoint type: PUBLISHER\nGID: aa\n"
+              "Subscription count: 1\nNode name: _NODE_NAME_UNKNOWN_\n"
+              "Node namespace: _NODE_NAMESPACE_UNKNOWN_\nEndpoint type: SUBSCRIPTION\n"
+              "GID: 01.02.03.04.05.06.07.08.00.00.01.04\n")
+    identity = ("Publisher count: 1\nNode name: odometry\n"
+                "Node namespace: /uav1/mavros\nEndpoint type: PUBLISHER\n"
+                "GID: 01.02.03.04.05.06.07.08.00.00.02.03\n")
+    result = check_extnav(status, output, identity)
+    assert result["mavros_output_subscription"]
+    assert result["output_subscribers"][0]["identity_resolution"] == (
+        "participant_gid_from_odometry_in")
+
+    mismatched = identity.replace("01.02.03.04.05.06.07.08", "11.12.13.14.15.16.17.18")
+    result = check_extnav(status, output, mismatched)
+    assert not result["mavros_output_subscription"]
+    assert result["output_subscribers"][0]["resolved_node"] == "_NODE_NAME_UNKNOWN_"
+
+
 def test_smoke_service_events_support_empty_and_command_responses():
     class Future:
         def __init__(self, response=None, error=None, done=True):

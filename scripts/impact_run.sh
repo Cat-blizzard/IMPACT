@@ -194,6 +194,7 @@ graph_probe /xq/eval/p5/ground_truth "$run/truth-graph.txt"
 graph_probe /uav1/mavros/setpoint_position/local "$run/setpoint-graph.txt"
 graph_probe /xq/p4/extnav/status "$run/extnav-status-graph.txt"
 graph_probe /uav1/mavros/odometry/out "$run/extnav-output-graph.txt"
+graph_probe /uav1/mavros/odometry/in "$run/mavros-odometry-in-graph.txt"
 audit_args=("$run" "$profile")
 [[ "${IMPACT_SMOKE_ONLY:-0}" == 1 ]] && audit_args+=(--smoke)
 python3 "$root/scripts/impact_runtime_audit.py" "${audit_args[@]}"
