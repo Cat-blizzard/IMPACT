@@ -262,13 +262,22 @@ def experiment(args):
             labels = {item.get("label") for item in cleanup}
             required = {"sitl", "mavros", "gazebo", "rosbag", "stack"}
             expected_statuses = {0, 130, 143}
+            cleanup_logs = "\n".join((run/name).read_text(errors="replace")
+                                      for name in ("stack.log", "mavros.log", "gazebo.log", "sitl.log")
+                                      if (run/name).is_file())
+            cleanup_log_errors = [marker for marker in (
+                "Traceback (most recent call last)", "terminate called after throwing",
+                "Segmentation fault", "core dumped", "process has died")
+                if marker in cleanup_logs]
             cleanup_passed = (required <= labels
                               and all(not item.get("residual", True) for item in cleanup)
                               and all(item.get("initial_alive") or item.get("label") == "rosbag" for item in cleanup)
                               and all(item.get("wait_status") in expected_statuses
                                       or (item.get("label") == "rosbag" and item.get("wait_status") == 127)
-                                      for item in cleanup))
-            smoke.update(cleanup_processes=cleanup, cleanup_passed=cleanup_passed)
+                                      for item in cleanup)
+                              and not cleanup_log_errors)
+            smoke.update(cleanup_processes=cleanup, cleanup_log_errors=cleanup_log_errors,
+                         cleanup_passed=cleanup_passed)
             write_json(run/"smoke.json", smoke)
             passed = code == 0 and smoke.get("passed") is True and cleanup_passed
             report.update(smoke=smoke, launcher_exit_code=code,

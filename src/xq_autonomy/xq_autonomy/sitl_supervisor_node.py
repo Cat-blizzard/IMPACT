@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.clock import Clock, ClockType
 from rclpy.qos import qos_profile_sensor_data
@@ -44,7 +45,7 @@ def main_node(cls, args=None):
     node = cls()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
