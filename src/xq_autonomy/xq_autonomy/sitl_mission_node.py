@@ -68,18 +68,28 @@ class SITLMission(P4MissionNode):
             self.task_reason = self.task_failure_reason
         elif status != "PASS" and not self.task_success and self.task_reason == "NOT_STARTED":
             self.task_reason = reason
-        state_fresh = self._fcu_state_is_fresh()
-        termination_confirmed = bool(state_fresh and not self.fcu_state.armed)
+        termination = self._termination_evidence()
+        state_fresh = bool(termination["state_fresh"])
+        termination_confirmed = bool(termination["confirmed"])
+        if not self.termination_reason:
+            if termination_confirmed:
+                self.termination_reason = (
+                    "FCU disarmed in LAND after flight"
+                    if termination["armed_seen"] else "FCU remained disarmed"
+                )
+            else:
+                self.termination_reason = "FCU termination not confirmed"
         self.finalized = True
         self.phase = "DONE" if status == "PASS" else "FAILED"
         self._event(status, reason)
         result = dict(schema_version=1, validation="SIMULATED", session_id=self.session,
             status=status, reason=reason, task_success=self.task_success,
             task_reason=self.task_reason, termination_confirmed=termination_confirmed,
-            termination=dict(confirmed=termination_confirmed, state_fresh=state_fresh,
-                reason=self.termination_reason,
-                armed=bool(self.fcu_state.armed), mode=self.fcu_state.mode,
-                state_age_s=(time.monotonic()-self.fcu_state_last_wall if self.fcu_state_last_wall else None)),
+            termination={**termination, "confirmed": termination_confirmed,
+                "state_fresh": state_fresh, "reason": self.termination_reason,
+                "armed": bool(self.fcu_state.armed), "mode": self.fcu_state.mode,
+                "state_age_s": (time.monotonic()-self.fcu_state_last_wall
+                                if self.fcu_state_last_wall else None)},
             verified_parameters=self.verified_params, events=self.events,
             elapsed_wall_s=time.monotonic()-self.started,
             elapsed_sim_s=None if self.task_started is None else (self.task_ended if self.task_ended is not None else self.get_clock().now().nanoseconds/1e9)-self.task_started)
@@ -108,12 +118,15 @@ class SITLMission(P4MissionNode):
             if termination_started is None:
                 termination_started = self.phase_started
             if wall-termination_started > float(self.get_parameter("failsafe_termination_timeout_s").value):
-                confirmed = self._fcu_state_is_fresh() and not self.fcu_state.armed
+                confirmed = bool(self._termination_evidence()["confirmed"])
                 self.termination_reason = ("FCU disarmed at termination deadline" if confirmed
                                            else "FCU termination not confirmed before timeout")
                 self._event("TERMINATION_CONFIRMED" if confirmed else "TERMINATION_UNCONFIRMED",
                             self.termination_reason)
-                self._finish("FAIL", self.task_failure_reason or "termination deadline exceeded")
+                self._finish(
+                    "PASS" if confirmed and self.task_success and not self.task_failure_reason else "FAIL",
+                    self.task_reason if confirmed else (self.task_failure_reason or "termination deadline exceeded"),
+                )
                 return
         if self.phase in ("HOVER", "ACTIVE"):
             _, snapshot = self._observe_health(require_params=False, require_prearm=True)
@@ -158,10 +171,7 @@ class SITLMission(P4MissionNode):
             if wall-self.phase_started > 30:
                 self._finish("FAIL", "LAND_COMMAND_TIMEOUT")
         elif self.phase == "DESCEND":
-            odom_fresh = self.have_odom and wall-self.current_odom_last_wall <= float(
-                self.get_parameter("health_odom_max_age_s").value)
-            if (self._fcu_state_is_fresh() and not self.fcu_state.armed and odom_fresh
-                    and abs(self.current_xyz[2]-self.origin_xyz[2]) <= 0.35):
+            if self._termination_evidence()["confirmed"]:
                 self._finish("PASS" if self.task_success else "FAIL", self.task_reason)
             elif wall-self.phase_started > 90:
                 self._finish("FAIL", "LANDING_NOT_CONFIRMED")

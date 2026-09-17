@@ -168,6 +168,7 @@ class P4MissionNode(Node):
 
         self.fcu_state = State()
         self.have_state = False
+        self.armed_seen = False
         self.fcu_state_last_wall = 0.0
         self.fcu_sys_status = SysStatus()
         self.have_sys_status = False
@@ -232,6 +233,7 @@ class P4MissionNode(Node):
     def _state_cb(self, message: State) -> None:
         self.fcu_state = message
         self.have_state = True
+        self.armed_seen = self.armed_seen or bool(message.armed)
         self.fcu_state_last_wall = time.monotonic()
 
     def _sys_status_cb(self, message: SysStatus) -> None:
@@ -660,6 +662,35 @@ class P4MissionNode(Node):
             max_age = 2.5
         return time.monotonic() - self.fcu_state_last_wall <= max_age
 
+    def _termination_evidence(self) -> dict[str, object]:
+        """Describe termination without treating drifting altitude as ground truth."""
+        state_fresh = self._fcu_state_is_fresh()
+        disarmed = state_fresh and not bool(self.fcu_state.armed)
+        mode_is_land = str(self.fcu_state.mode).upper() == "LAND"
+        flight_started = bool(getattr(self, "armed_seen", False))
+        confirmed = bool(disarmed and (not flight_started or mode_is_land))
+        odom_fresh = bool(
+            self.have_odom
+            and time.monotonic() - self.current_odom_last_wall
+            <= float(self.get_parameter("health_odom_max_age_s").value)
+        )
+        altitude_error = abs(self.current_xyz[2] - self.origin_xyz[2]) if self.have_odom else None
+        return {
+            "confirmed": confirmed,
+            "state_fresh": state_fresh,
+            "disarmed": bool(disarmed),
+            "mode_is_land": mode_is_land,
+            "armed_seen": flight_started,
+            "evidence": (
+                "fresh_fcu_disarm_in_land" if confirmed and flight_started
+                else "fresh_fcu_remained_disarmed" if confirmed
+                else None
+            ),
+            "odom_fresh": odom_fresh,
+            "altitude_error_from_origin_m": altitude_error,
+            "altitude_near_origin": bool(odom_fresh and altitude_error is not None and altitude_error <= 0.35),
+        }
+
     def _distance_to_target(self) -> float:
         if self.target is None:
             return math.inf
@@ -677,8 +708,9 @@ class P4MissionNode(Node):
     def _finish(self, status: str, reason: str) -> None:
         if self.finalized:
             return
-        state_fresh = self._fcu_state_is_fresh()
-        termination_confirmed = bool(state_fresh and not self.fcu_state.armed)
+        termination = self._termination_evidence()
+        state_fresh = bool(termination["state_fresh"])
+        termination_confirmed = bool(termination["confirmed"])
         if status == "PASS" and self.task_failure_reason:
             status, reason = "FAIL", self.task_failure_reason
         elif status == "PASS" and not termination_confirmed:
@@ -687,7 +719,11 @@ class P4MissionNode(Node):
         self.phase = "DONE" if status == "PASS" else "FAILED"
         self._event(status, reason)
         if termination_confirmed:
-            self.termination_reason = self.termination_reason or "FCU disarmed"
+            default_reason = (
+                "FCU disarmed in LAND after flight"
+                if termination["armed_seen"] else "FCU remained disarmed"
+            )
+            self.termination_reason = self.termination_reason or default_reason
         else:
             self.termination_reason = self.termination_reason or "FCU remains armed or state unavailable"
         result = {
@@ -729,11 +765,11 @@ class P4MissionNode(Node):
                 "failure_reason": None if status == "PASS" else (self.task_failure_reason or reason),
             },
             "termination": {
+                **termination,
                 "confirmed": termination_confirmed,
                 "reason": self.termination_reason,
                 "armed": bool(self.fcu_state.armed),
                 "mode": self.fcu_state.mode,
-                "state_fresh": state_fresh,
                 "state_age_s": (time.monotonic() - self.fcu_state_last_wall
                                  if self.fcu_state_last_wall else None),
             },
@@ -768,7 +804,7 @@ class P4MissionNode(Node):
             if termination_started is None:
                 termination_started = self.phase_started
             if now - termination_started > float(self.get_parameter("failsafe_termination_timeout_s").value):
-                confirmed = self._fcu_state_is_fresh() and not self.fcu_state.armed
+                confirmed = bool(self._termination_evidence()["confirmed"])
                 self.termination_reason = ("FCU disarmed at termination deadline" if confirmed
                                            else "FCU termination not confirmed before timeout")
                 self._event("TERMINATION_CONFIRMED" if confirmed else "TERMINATION_UNCONFIRMED",
@@ -878,8 +914,7 @@ class P4MissionNode(Node):
         elif self.phase == "LAND":
             self._send_command("land")
         elif self.phase == "DESCEND":
-            if (self._fcu_state_is_fresh() and not self.fcu_state.armed
-                    and abs(self.current_xyz[2] - self.origin_xyz[2]) <= 0.35):
+            if self._termination_evidence()["confirmed"]:
                 status = "FAIL" if self.task_failure_reason else "PASS"
                 reason = self.task_failure_reason or "GPS-off LIO ExternalNav takeoff-hover-rectangle-return-land completed"
                 self._finish(status, reason)

@@ -221,7 +221,8 @@ start rosbag ros2 bag record -o "$run/rosbag" \
  /integrity/directional /integrity/debug /integrity/information_map \
  /impact/planner_goal /impact/planner_candidate /impact/certified_bspline \
  /impact/authorization /impact/position_cmd /impact/mission_stage /impact/status \
- /impact/arbiter_status /uav1/mavros/state /uav1/mavros/local_position/odom \
+ /impact/arbiter_status /uav1/mavros/state /uav1/mavros/extended_state \
+ /uav1/mavros/local_position/odom \
  /uav1/mavros/odometry/out /uav1/mavros/statustext/recv /uav1/mavros/sys_status \
  /uav1/mavros/estimator_status \
  /uav1/mavros/imu/data \

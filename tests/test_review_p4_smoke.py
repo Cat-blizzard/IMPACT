@@ -24,10 +24,13 @@ def p4(tmp_path, monkeypatch):
     node.task_failure_reason = None
     node.termination_reason = None
     node.have_state = True
+    node.armed_seen = True
     node.fcu_state_last_wall = clock[0]
     node.fcu_state = SimpleNamespace(connected=True, armed=True, mode="GUIDED")
     node.current_xyz = (0.0, 0.0, 0.0)
     node.origin_xyz = (0.0, 0.0, 0.0)
+    node.have_odom = True
+    node.current_odom_last_wall = clock[0]
     node.events = []
     node.commands = []
     node.arm_request_count = 1
@@ -42,6 +45,7 @@ def p4(tmp_path, monkeypatch):
     node.result_path = tmp_path / "mission.json"
     parameters = {"mission_timeout_s": 240.0, "failsafe_termination_timeout_s": 90.0,
                   "fcu_state_max_age_s": 2.5, "command_timeout_s": 8.0,
+                  "health_odom_max_age_s": 0.7,
                   "result_file": str(node.result_path)}
     node.get_parameter = lambda name: SimpleNamespace(value=parameters[name])
     node._event = lambda kind, detail: node.events.append(
@@ -75,6 +79,7 @@ def test_finish_cannot_override_recorded_task_failure(p4):
     node, _ = p4
     node.task_failure_reason = "failed before landing"
     node.fcu_state.armed = False
+    node.fcu_state.mode = "LAND"
     node._finish("PASS", "landed")
     result = json.loads(node.result_path.read_text())
     assert result["status"] == "FAIL"
@@ -94,6 +99,7 @@ def test_mission_timeout_still_sends_land_and_observes_disarm(p4):
     node._transition("DESCEND", "landing accepted")
     assert node.termination_started == 100.0
     node.fcu_state.armed = False
+    node.fcu_state.mode = "LAND"
     node._tick()
     result = json.loads(node.result_path.read_text())
     assert result["status"] == "FAIL"
@@ -137,6 +143,7 @@ def test_stale_disarm_cannot_complete_descent(p4):
     node, clock = p4
     node._transition("DESCEND", "landing accepted")
     node.fcu_state.armed = False
+    node.fcu_state.mode = "LAND"
     node.fcu_state_last_wall = clock[0] - 10.0
     node._tick()
     assert not node.finalized
@@ -222,6 +229,7 @@ def test_successful_descent_without_task_failure_still_passes(p4):
     node.completed_waypoints = [{"index": index} for index in range(1, 5)]
     node._transition("DESCEND", "landing accepted")
     node.fcu_state.armed = False
+    node.fcu_state.mode = "LAND"
     node._tick()
     result = json.loads(node.result_path.read_text())
     assert result["status"] == "PASS"
@@ -235,6 +243,7 @@ def test_disarm_at_deadline_preserves_confirmed_termination(p4):
     clock[0] += 91.0
     node.fcu_state_last_wall = clock[0]
     node.fcu_state.armed = False
+    node.fcu_state.mode = "LAND"
     node._tick()
     result = json.loads(node.result_path.read_text())
     assert result["status"] == "FAIL"

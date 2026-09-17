@@ -29,7 +29,7 @@ def mission(tmp_path, monkeypatch):
         task_reason="NOT_STARTED", task_failure_reason=None, termination_reason=None,
         termination_started=None, last_sim=10.0, task_wall=1000.0, arbiter_wall=1000.0,
         task_status=dict(completed=False), arbiter_status=dict(mode="TRACK"),
-        have_state=True, fcu_state_last_wall=1000.0, have_sys_status=True,
+        have_state=True, armed_seen=True, fcu_state_last_wall=1000.0, have_sys_status=True,
         sys_status_last_wall=1000.0, have_odom=True, current_odom_last_wall=1000.0,
         current_odom_stamp=10.0, current_odom_frame_id="map", current_odom_child_frame_id="base_link",
         current_odom_stamp_violations=0, current_odom_max_gap_s=0.0, current_xyz=(0., 0., 2.),
@@ -91,6 +91,7 @@ def test_healthy_task_can_reach_goal_and_confirm_landing(mission):
     node.phase = "DESCEND"
     node.current_xyz = node.origin_xyz
     node.fcu_state.armed = False
+    node.fcu_state.mode = "LAND"
     node._tick()
     result = json.loads(mission_module.Path(params["result_file"]).read_text())
     assert result["status"] == "PASS" and result["task_success"]
@@ -105,6 +106,7 @@ def test_health_failure_reason_survives_successful_landing(mission):
     node.phase = "DESCEND"
     node.current_xyz = node.origin_xyz
     node.fcu_state.armed = False
+    node.fcu_state.mode = "LAND"
     node._tick()
     result = json.loads(mission_module.Path(params["result_file"]).read_text())
     assert result["status"] == "FAIL" and not result["task_success"]
@@ -112,20 +114,30 @@ def test_health_failure_reason_survives_successful_landing(mission):
     assert result["termination_confirmed"]
 
 
-@pytest.mark.parametrize("stale", ["state", "odom"])
-def test_descend_requires_fresh_state_and_altitude(mission, stale):
+def test_descend_requires_fresh_disarm_in_land(mission):
     node, _, _, _ = mission
     node.phase = "DESCEND"
     node.task_success = True
     node.task_reason = "GOAL_REACHED"
-    node.current_xyz = node.origin_xyz
     node.fcu_state.armed = False
-    if stale == "state":
-        node.fcu_state_last_wall = 990.0
-    else:
-        node.current_odom_last_wall = 990.0
+    node.fcu_state.mode = "GUIDED"
     node._tick()
     assert not node.finalized
+
+
+def test_lio_altitude_bias_is_diagnostic_after_fresh_land_disarm(mission):
+    node, _, params, _ = mission
+    node.phase = "DESCEND"
+    node.task_success = True
+    node.task_reason = "GOAL_REACHED"
+    node.current_xyz = (node.origin_xyz[0], node.origin_xyz[1], node.origin_xyz[2] + 0.8)
+    node.fcu_state.armed = False
+    node.fcu_state.mode = "LAND"
+    node._tick()
+    result = json.loads(mission_module.Path(params["result_file"]).read_text())
+    assert result["status"] == "PASS"
+    assert result["termination"]["evidence"] == "fresh_fcu_disarm_in_land"
+    assert not result["termination"]["altitude_near_origin"]
 
 
 def test_stale_disarm_cannot_confirm_termination_on_timeout(mission):
@@ -134,6 +146,7 @@ def test_stale_disarm_cannot_confirm_termination_on_timeout(mission):
     node.phase_started = 900.0
     node.current_xyz = node.origin_xyz
     node.fcu_state.armed = False
+    node.fcu_state.mode = "LAND"
     node.fcu_state_last_wall = 990.0
     node._tick()
     result = json.loads(mission_module.Path(params["result_file"]).read_text())
@@ -166,6 +179,7 @@ def test_clock_reset_during_descent_cannot_restore_task_success(mission):
     node.task_reason = "GOAL_REACHED"
     node.current_xyz = node.origin_xyz
     node.fcu_state.armed = False
+    node.fcu_state.mode = "LAND"
     clock.sim = 1.0
     node._tick()
     result = json.loads(mission_module.Path(params["result_file"]).read_text())
@@ -198,6 +212,7 @@ def test_shared_termination_budget_survives_failsafe_land_and_descend(mission, d
     node._poll_command = lambda: node._transition("DESCEND", "landing accepted")
     node._tick()
     assert node.phase == "DESCEND" and node.termination_started == 1000.0
+    node.fcu_state.mode = "LAND"
 
     clock.wall = 1091.0
     node.fcu_state_last_wall = clock.wall
