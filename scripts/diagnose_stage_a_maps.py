@@ -33,6 +33,7 @@ MAP_TOPICS = (
 MIN_SURFELS = 12
 MIN_REACHABLE_FREE_CELLS = 100
 MAX_MAP_ODOM_STAMP_GAP_S = 1.0
+MAX_INFLATION_SOURCE_STAMP_GAP_S = 1.0
 
 
 def file_hash(path):
@@ -132,7 +133,7 @@ def reachable_free_cells(data, start):
     return visited
 
 
-def _grid_summary(message, record_ns, odometry, goal_xy):
+def _grid_summary(message, record_ns, odometry, goal_xy, mission_start):
     width, height = int(message.info.width), int(message.info.height)
     resolution = float(message.info.resolution)
     values = np.asarray(message.data, dtype=np.int16)
@@ -151,13 +152,13 @@ def _grid_summary(message, record_ns, odometry, goal_xy):
                   occupied_cells=int(np.count_nonzero(grid >= 50)),
                   unknown_cells=int(np.count_nonzero(grid < 0)),
                   odom_record_gap_s=abs(nearest["record_ns"] - record_ns) / 1e9 if nearest else None)
-    if nearest is None:
+    if nearest is None or mission_start is None or mission_start["frame_id"] != result["frame_id"]:
         result.update(start_cell=None, goal_cell=None, reachable_free_cells=0,
                       goal_reachable=False, start_snap_m=None, goal_snap_m=None)
         return result
     def cell(x, y):
         return int(math.floor((x-origin_x)/resolution)), int(math.floor((y-origin_y)/resolution))
-    raw_start = cell(nearest["x"], nearest["y"])
+    raw_start = cell(mission_start["x"], mission_start["y"])
     raw_goal = cell(*goal_xy)
     start = _nearest_free(grid, *raw_start)
     goal = _nearest_free(grid, *raw_goal)
@@ -165,6 +166,8 @@ def _grid_summary(message, record_ns, odometry, goal_xy):
     result.update(start_cell=list(start) if start else None, goal_cell=list(goal) if goal else None,
         start_snap_m=resolution * math.dist(start, raw_start) if start else None,
         goal_snap_m=resolution * math.dist(goal, raw_goal) if goal else None,
+        mission_start_xy=[mission_start["x"], mission_start["y"]],
+        mission_start_stamp_s=mission_start["stamp_s"],
         reachable_free_cells=len(component), goal_reachable=bool(goal and goal in component))
     return result
 
@@ -186,6 +189,25 @@ def _inflation_alignment(source, inflated):
         "aligned_fraction_within_1m": aligned_fraction,
         "expanded_points_beyond_0_15m": expanded,
         "maximum_nearest_source_distance_m": float(distances.max())}
+
+
+def _aligned_cloud_pair(source_items, inflated_items):
+    """Choose the latest nonempty source/inflation pair inside the evidence window."""
+    sources = [item for item in source_items if item["sampled_finite_points"] >= MIN_SURFELS]
+    inflated = [item for item in inflated_items if item["sampled_finite_points"] > 0]
+    if not sources or not inflated:
+        return None, None, None
+    candidates = []
+    for source in sources:
+        match = min(inflated, key=lambda item: abs(item["stamp_s"] - source["stamp_s"]))
+        gap = abs(match["stamp_s"] - source["stamp_s"])
+        candidates.append((source, match, gap))
+    aligned = [item for item in candidates if item[2] <= MAX_INFLATION_SOURCE_STAMP_GAP_S]
+    if aligned:
+        return max(aligned, key=lambda item: (min(item[0]["stamp_s"], item[1]["stamp_s"]),
+                                               min(item[0]["sampled_finite_points"],
+                                                   item[1]["sampled_finite_points"])))
+    return min(candidates, key=lambda item: item[2])
 
 
 def _goal(run):
@@ -238,15 +260,27 @@ def _decode_content(run):
             if len(errors) < 20:
                 errors.append(f"{topic}: {type(error).__name__}: {error}")
     goal = _goal(run)
-    grid_summaries = [_grid_summary(message, record, odometry, goal[:2]) for message, record in grids]
+    valid_start_odometry = [item for item in odometry
+                            if item["frame_id"] == "xq_lio_map"
+                            and _finite((item["x"], item["y"], item["stamp_s"]))]
+    mission_start = min(valid_start_odometry, key=lambda item: item["record_ns"], default=None)
+    grid_summaries = [_grid_summary(message, record, odometry, goal[:2], mission_start)
+                      for message, record in grids]
     navigation = max(grid_summaries, key=lambda item: (item.get("goal_reachable", False),
         item.get("reachable_free_cells", 0), item.get("free_cells", 0)), default={})
     best_information = max(information, key=lambda item: (item["content_valid"], item["surfels"]), default={})
     best_clouds = {topic: max(items, key=lambda item: item["sampled_finite_points"], default={})
                    for topic, items in clouds.items()}
-    source = best_clouds.get("/xq/p5/cloud_map", {}).get("_points")
-    inflated = best_clouds.get("/grid_map/occupancy_inflate", {}).get("_points")
-    inflation = _inflation_alignment(source, inflated)
+    source_item, inflated_item, inflation_stamp_gap = _aligned_cloud_pair(
+        clouds.get("/xq/p5/cloud_map", []), clouds.get("/grid_map/occupancy_inflate", []))
+    inflation = _inflation_alignment(
+        source_item.get("_points") if source_item else None,
+        inflated_item.get("_points") if inflated_item else None)
+    inflation.update(source_stamp_s=source_item.get("stamp_s") if source_item else None,
+        inflated_stamp_s=inflated_item.get("stamp_s") if inflated_item else None,
+        stamp_gap_s=inflation_stamp_gap,
+        stamp_aligned=inflation_stamp_gap is not None
+            and inflation_stamp_gap <= MAX_INFLATION_SOURCE_STAMP_GAP_S)
     static_alignment = any(item["parent"] == "map" and item["child"] == "xq_lio_map"
         and np.linalg.norm(item["translation"]) <= 1e-6
         and abs(abs(item["quaternion_xyzw"][3]) - 1.0) <= 1e-6
@@ -269,7 +303,7 @@ def _decode_content(run):
         "reachable_free_component": navigation.get("reachable_free_cells", 0) >= MIN_REACHABLE_FREE_CELLS,
         "fixed_goal_reachable": navigation.get("goal_reachable") is True and (navigation.get("goal_snap_m") or 0.0) <= 0.5,
         "ego_inflated_cloud_nonempty": best_clouds.get("/grid_map/occupancy_inflate", {}).get("sampled_finite_points", 0) > 0,
-        "ego_inflation_aligned_with_source": inflation["aligned"],
+        "ego_inflation_aligned_with_source": inflation["aligned"] and inflation["stamp_aligned"],
         "map_frames_aligned": frame_aligned,
         "map_stamps_aligned_with_odometry": time_aligned,
     }
@@ -277,11 +311,13 @@ def _decode_content(run):
         summary.pop("_points", None)
     return {"goal_lio_m": goal, "checks": checks, "passed": all(checks.values()),
         "information_map": best_information, "clouds": best_clouds, "navigation_map": navigation,
+        "mission_start_odometry": mission_start,
         "inflation_alignment": inflation, "static_map_alignment": static_alignment,
         "map_to_odom_stamp_gaps_s": stamp_gaps, "decode_errors": errors,
         "criteria": {"minimum_surfels": MIN_SURFELS,
             "minimum_reachable_free_cells": MIN_REACHABLE_FREE_CELLS,
             "maximum_map_odom_stamp_gap_s": MAX_MAP_ODOM_STAMP_GAP_S,
+            "maximum_inflation_source_stamp_gap_s": MAX_INFLATION_SOURCE_STAMP_GAP_S,
             "maximum_goal_snap_m": 0.5}}
 
 

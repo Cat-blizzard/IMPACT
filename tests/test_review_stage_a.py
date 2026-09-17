@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 import impact
-from diagnose_stage_a_maps import EXPECTED, audit, reachable_free_cells
+from diagnose_stage_a_maps import EXPECTED, _aligned_cloud_pair, _grid_summary, audit, reachable_free_cells
 
 
 def recorded_bag(root, *, missing=None, zero_count=None, wrong_type=None):
@@ -79,6 +79,33 @@ def test_reachable_free_cells_rejects_unknown_start():
     grid = np.zeros((3, 3), dtype=np.int8)
     grid[1, 1] = -1
     assert reachable_free_cells(grid, (1, 1)) == set()
+
+
+def test_navigation_reachability_uses_fixed_mission_start_not_snapshot_pose():
+    info = SimpleNamespace(width=8, height=3, resolution=1.0,
+        origin=SimpleNamespace(position=SimpleNamespace(x=0.0, y=0.0)))
+    message = SimpleNamespace(header=SimpleNamespace(frame_id="xq_lio_map",
+        stamp=SimpleNamespace(sec=12, nanosec=0)), info=info,
+        data=[0] * 24)
+    odometry = [
+        {"record_ns": 1, "stamp_s": 1.0, "frame_id": "xq_lio_map", "x": 0.5, "y": 1.5},
+        {"record_ns": 12_000_000_000, "stamp_s": 12.0, "frame_id": "xq_lio_map",
+         "x": 6.5, "y": 1.5},
+    ]
+    summary = _grid_summary(message, 12_000_000_000, odometry, (6.5, 1.5), odometry[0])
+    assert summary["start_cell"] == [0, 1]
+    assert summary["goal_cell"] == [6, 1]
+    assert summary["mission_start_xy"] == [0.5, 1.5]
+
+
+def test_inflation_alignment_pair_is_latest_within_time_window():
+    cloud = lambda stamp, count: {"stamp_s": stamp, "sampled_finite_points": count}
+    source, inflated, gap = _aligned_cloud_pair(
+        [cloud(10.0, 100), cloud(20.0, 100)],
+        [cloud(10.1, 100), cloud(19.8, 50), cloud(40.0, 5000)])
+    assert source["stamp_s"] == 20.0
+    assert inflated["stamp_s"] == 19.8
+    assert gap == pytest.approx(0.2)
 
 
 def write_actual_evaluation(root, *, samples=100, collisions=0, clearance=1.):
