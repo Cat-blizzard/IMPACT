@@ -25,6 +25,8 @@ from .minimum_excitation import (generate_discrete_candidates, build_information
 from .p10_active_perception_node import _cloud_xyz
 from .sitl_integrity import certify_final, RecoveryCycle
 
+RECOVERY_SETTLE_TIMEOUT_S = 3.0
+
 
 def stamp_s(stamp):
     return stamp.sec + stamp.nanosec * 1e-9
@@ -354,18 +356,29 @@ class SITLSupervisor(Node):
             self.recovery_observed = True
             self.request(self.goal)
         elif not self.completed and not self.active and self.cycle.phase != "OBSERVING" and now-self.last_plan_sim > 1:
-            if self.cycle.phase == "PLANNING" and time.monotonic()-self.last_request_wall < 3:
+            settling_recovery = self.cycle.intent != "mission" and self.cycle.phase == "EXECUTING"
+            if settling_recovery and now-self.last_plan_sim <= RECOVERY_SETTLE_TIMEOUT_S:
+                # EGO splines can end before the vehicle has braked below the
+                # arrival-speed threshold. Keep the request correlated while
+                # the arbiter holds instead of skipping to the next intent.
                 pass
-            elif self.cycle.remaining:
-                name, target, scale = self.cycle.remaining.pop(0)
-                if name == "short_hover":
-                    self.cycle.intent = name
-                    self.cycle.arrived(now)
-                    self.observing_until = now + 1.
-                else:
-                    self.request(target, name, scale)
+            elif self.cycle.phase == "PLANNING" and time.monotonic()-self.last_request_wall < 3:
+                pass
             else:
-                self.request(self.goal)
+                if settling_recovery:
+                    self.event("RECOVERY_STEP_TIMEOUT", intent=self.cycle.intent,
+                               target=self.target.tolist(), position=position.tolist(), speed=speed)
+                    self.cycle.phase = "WAITING"
+                if self.cycle.remaining:
+                    name, target, scale = self.cycle.remaining.pop(0)
+                    if name == "short_hover":
+                        self.cycle.intent = name
+                        self.cycle.arrived(now)
+                        self.observing_until = now + 1.
+                    else:
+                        self.request(target, name, scale)
+                else:
+                    self.request(self.goal)
         self.status()
 
     def status(self):

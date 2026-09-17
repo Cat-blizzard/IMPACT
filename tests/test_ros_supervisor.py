@@ -12,7 +12,9 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import Header
 from xq_sim_interfaces.msg import DirectionalIntegrity, PlannerCandidate
 from xq_autonomy.p10_information_map_node import _xyz_cloud
-from xq_autonomy.sitl_supervisor_node import SITLSupervisor, ros_stamp
+from xq_autonomy.sitl_supervisor_node import (
+    RECOVERY_SETTLE_TIMEOUT_S, SITLSupervisor, ros_stamp,
+)
 from xq_autonomy.sitl_evaluator_node import box_clearance
 import impact
 
@@ -118,6 +120,48 @@ def test_unconfirmed_observation_continues_remaining_recovery_intents(node):
     rows = [json.loads(line) for line in impact.Path(node.events.name).read_text().splitlines()]
     event = next(row for row in rows if row["event"] == "RECOVERY_NOT_CONFIRMED")
     assert event["remaining_intents"] == ["backtrack"]
+
+
+def test_expired_recovery_spline_waits_for_vehicle_to_settle(node):
+    node.now_s = lambda: 10.0
+    node.fresh = lambda: True
+    request = node.cycle.issue("up_offset")
+    assert node.cycle.result(request, True)
+    node.target = np.array([0.3, 0.0, 2.0])
+    node.last_plan_sim = 10.0 - 0.5 * RECOVERY_SETTLE_TIMEOUT_S
+    node.active = None
+    node.cycle.remaining = [("down_offset", np.array([0.0, 0.0, 1.7]), 1.0)]
+
+    node.tick()
+    assert node.cycle.phase == "EXECUTING"
+    assert not node.test_pubs["goal_pub"]
+    assert len(node.cycle.remaining) == 1
+
+    node.odom.pose.pose.position.x = 0.3
+    node.tick()
+    assert node.cycle.phase == "OBSERVING"
+    assert len(node.cycle.remaining) == 1
+    rows = [json.loads(line) for line in impact.Path(node.events.name).read_text().splitlines()]
+    assert any(row["event"] == "RECOVERY_STEP_DONE" for row in rows)
+
+
+def test_unreached_recovery_step_times_out_before_next_intent(node):
+    node.now_s = lambda: 10.0
+    node.fresh = lambda: True
+    request = node.cycle.issue("up_offset")
+    assert node.cycle.result(request, True)
+    node.target = np.array([0.5, 0.0, 2.0])
+    node.last_plan_sim = 10.0 - RECOVERY_SETTLE_TIMEOUT_S - 0.1
+    node.active = None
+    node.cycle.remaining = [("down_offset", np.array([0.0, 0.0, 1.7]), 1.0)]
+
+    node.tick()
+    assert node.cycle.intent == "down_offset"
+    assert node.cycle.phase == "PLANNING"
+    assert len(node.test_pubs["goal_pub"]) == 1
+    rows = [json.loads(line) for line in impact.Path(node.events.name).read_text().splitlines()]
+    timeout = next(row for row in rows if row["event"] == "RECOVERY_STEP_TIMEOUT")
+    assert timeout["intent"] == "up_offset"
 
 
 def test_clock_reset_invalidates_pending_and_active(node):
