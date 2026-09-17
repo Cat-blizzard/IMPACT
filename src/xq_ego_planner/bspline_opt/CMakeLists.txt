@@ -28,6 +28,7 @@ find_package(pcl_conversions REQUIRED)
 find_package(Eigen3 REQUIRED)
 
 if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
   # comment the line when a copyright and license is added to all source files
@@ -37,6 +38,9 @@ if(BUILD_TESTING)
   # a copyright and license is added to all source files
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  ament_add_gtest(test_uniform_bspline test/test_uniform_bspline.cpp)
+  target_link_libraries(test_uniform_bspline bspline_opt)
 endif()
 
 include_directories( 

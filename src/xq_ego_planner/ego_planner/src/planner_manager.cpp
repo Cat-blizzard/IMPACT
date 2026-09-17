@@ -307,7 +307,23 @@ namespace ego_planner
         Eigen::MatrixXd optimal_control_points;
         flag_step_2_success = refineTrajAlgo(pos, start_end_derivatives, ratio, ts, optimal_control_points);
         if (flag_step_2_success)
+        {
           pos = UniformBspline(optimal_control_points, 3, ts);
+          pos.setPhysicalLimits(pp_.max_vel_, pp_.max_acc_, pp_.feasibility_tolerance_);
+
+          // The refinement optimizer can move control points after the first
+          // feasibility check. Enforce the final execution contract on the
+          // trajectory that will actually be published. Time scaling leaves
+          // the spatial path unchanged and reduces both velocity and
+          // acceleration bounds.
+          double final_ratio;
+          if (!pos.checkFeasibility(final_ratio, false))
+          {
+            pos.scaleTime(final_ratio);
+            double residual_ratio;
+            flag_step_2_success = pos.checkFeasibility(residual_ratio, false);
+          }
+        }
       }
 
       if (!flag_step_2_success)

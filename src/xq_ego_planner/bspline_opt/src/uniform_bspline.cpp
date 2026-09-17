@@ -137,8 +137,6 @@ namespace ego_planner
     bool fea = true;
 
     Eigen::MatrixXd P = control_points_;
-    int dimension = control_points_.rows();
-
     /* check vel feasibility and insert points */
     double max_vel = -1.0;
     double enlarged_vel_lim = limit_vel_ * (1.0 + feasibility_tolerance_) + 1e-4;
@@ -146,18 +144,18 @@ namespace ego_planner
     {
       Eigen::VectorXd vel = p_ * (P.col(i + 1) - P.col(i)) / (u_(i + p_ + 1) - u_(i + 1));
 
-      if (fabs(vel(0)) > enlarged_vel_lim || fabs(vel(1)) > enlarged_vel_lim ||
-          fabs(vel(2)) > enlarged_vel_lim)
+      // Certification bounds the physical 3-D speed, so use the same
+      // Euclidean norm here rather than allowing three independent axes to
+      // exceed the final vector budget when combined.
+      const double velocity_norm = vel.norm();
+      if (velocity_norm > enlarged_vel_lim)
       {
 
         if (show)
           cout << "[Check]: Infeasible vel " << i << " :" << vel.transpose() << endl;
         fea = false;
 
-        for (int j = 0; j < dimension; ++j)
-        {
-          max_vel = max(max_vel, fabs(vel(j)));
-        }
+        max_vel = max(max_vel, velocity_norm);
       }
     }
 
@@ -172,18 +170,15 @@ namespace ego_planner
                              (P.col(i + 1) - P.col(i)) / (u_(i + p_ + 1) - u_(i + 1))) /
                             (u_(i + p_ + 1) - u_(i + 2));
 
-      if (fabs(acc(0)) > enlarged_acc_lim || fabs(acc(1)) > enlarged_acc_lim ||
-          fabs(acc(2)) > enlarged_acc_lim)
+      const double acceleration_norm = acc.norm();
+      if (acceleration_norm > enlarged_acc_lim)
       {
 
         if (show)
           cout << "[Check]: Infeasible acc " << i << " :" << acc.transpose() << endl;
         fea = false;
 
-        for (int j = 0; j < dimension; ++j)
-        {
-          max_acc = max(max_acc, fabs(acc(j)));
-        }
+        max_acc = max(max_acc, acceleration_norm);
       }
     }
 
@@ -203,6 +198,15 @@ namespace ego_planner
       u_(i) += double(i - num1) * t_inc;
     for (int i = num2 + 1; i < u_.rows(); ++i)
       u_(i) += delta_t;
+  }
+
+  void UniformBspline::scaleTime(const double &ratio)
+  {
+    if (ratio <= 1.0)
+      return;
+    const double start = u_(p_);
+    u_ = ((u_.array() - start) * ratio + start).matrix();
+    interval_ *= ratio;
   }
 
   // void UniformBspline::recomputeInit() {}
