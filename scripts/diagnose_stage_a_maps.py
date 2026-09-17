@@ -19,6 +19,7 @@ EXPECTED = {
     "/impact/information_cloud": "sensor_msgs/msg/PointCloud2",
     "/integrity/information_map": "xq_sim_interfaces/msg/InformationMap",
     "/cloud_registered": "sensor_msgs/msg/PointCloud2",
+    "/impact/legacy_frontier_cloud": "sensor_msgs/msg/PointCloud2",
     "/xq/p5/navigation_map": "nav_msgs/msg/OccupancyGrid",
     "/grid_map/occupancy_inflate": "sensor_msgs/msg/PointCloud2",
     "/impact/position_cmd": "quadrotor_msgs/msg/PositionCommand",
@@ -28,12 +29,14 @@ EXPECTED = {
 }
 MAP_TOPICS = (
     "/impact/information_cloud", "/integrity/information_map",
-    "/cloud_registered", "/xq/p5/navigation_map", "/grid_map/occupancy_inflate",
+    "/cloud_registered", "/impact/legacy_frontier_cloud",
+    "/xq/p5/navigation_map", "/grid_map/occupancy_inflate",
 )
 MIN_SURFELS = 12
 MIN_REACHABLE_FREE_CELLS = 100
 MAX_MAP_ODOM_STAMP_GAP_S = 1.0
 MAX_INFLATION_SOURCE_STAMP_GAP_S = 1.0
+EGO_SOURCE_TOPIC = "/cloud_registered"
 
 
 def file_hash(path):
@@ -272,7 +275,7 @@ def _decode_content(run):
     best_clouds = {topic: max(items, key=lambda item: item["sampled_finite_points"], default={})
                    for topic, items in clouds.items()}
     source_item, inflated_item, inflation_stamp_gap = _aligned_cloud_pair(
-        clouds.get("/xq/p5/cloud_map", []), clouds.get("/grid_map/occupancy_inflate", []))
+        clouds.get(EGO_SOURCE_TOPIC, []), clouds.get("/grid_map/occupancy_inflate", []))
     inflation = _inflation_alignment(
         source_item.get("_points") if source_item else None,
         inflated_item.get("_points") if inflated_item else None)
@@ -297,7 +300,7 @@ def _decode_content(run):
     checks = {
         "information_map_valid": bool(best_information.get("content_valid")),
         "information_cloud_nonempty": best_clouds.get("/impact/information_cloud", {}).get("sampled_finite_points", 0) >= MIN_SURFELS,
-        "frontier_cloud_nonempty": best_clouds.get("/xq/p5/cloud_map", {}).get("sampled_finite_points", 0) >= MIN_SURFELS,
+        "frontier_cloud_nonempty": best_clouds.get("/impact/legacy_frontier_cloud", {}).get("sampled_finite_points", 0) >= MIN_SURFELS,
         "navigation_grid_structurally_valid": bool(navigation.get("structurally_valid")),
         "navigation_grid_has_obstacles": navigation.get("occupied_cells", 0) > 0,
         "reachable_free_component": navigation.get("reachable_free_cells", 0) >= MIN_REACHABLE_FREE_CELLS,

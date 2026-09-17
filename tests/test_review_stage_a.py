@@ -9,7 +9,10 @@ import pytest
 import yaml
 
 import impact
-from diagnose_stage_a_maps import EXPECTED, _aligned_cloud_pair, _grid_summary, audit, reachable_free_cells
+from diagnose_stage_a_maps import (
+    EGO_SOURCE_TOPIC, EXPECTED, _aligned_cloud_pair, _grid_summary, audit,
+    reachable_free_cells,
+)
 
 
 def recorded_bag(root, *, missing=None, zero_count=None, wrong_type=None):
@@ -106,6 +109,12 @@ def test_inflation_alignment_pair_is_latest_within_time_window():
     assert source["stamp_s"] == 20.0
     assert inflated["stamp_s"] == 19.8
     assert gap == pytest.approx(0.2)
+
+
+def test_inflation_audit_uses_recorded_registered_cloud_source():
+    assert EGO_SOURCE_TOPIC == "/cloud_registered"
+    assert EGO_SOURCE_TOPIC in EXPECTED
+    assert "/impact/legacy_frontier_cloud" in EXPECTED
 
 
 def authorization_contract(source="source"):
