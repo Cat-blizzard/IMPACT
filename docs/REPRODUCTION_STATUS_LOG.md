@@ -1,5 +1,17 @@
 # 复现状态与问题日志
 
+## 2026-09-17：当前版本 GPU P4 单次开发验证
+
+运行提交 `a4d3fb33209b73f2a3c1514ff4709848db28d1b9` 在 D3D12 NVIDIA 硬件渲染下完成
+45 秒严格不解锁冒烟及一次 P4 正常飞行。任务、定位、飞控接收、落地解除武装、
+bag/DataFlash 和退出清理均通过，没有复现历史 ExternalNav/EKF 健康故障或 Gazebo 段错误。
+MAVROS 时间同步告警继续作为独立观察项保留。详见
+[当前版本 GPU P4 单次开发验证](GPU_P4_A4D3FB3_DEV_VALIDATION_20260917.md) 与
+[机器索引](../evidence/P4_GPU_A4D3FB3_20260917/validation-index.json)。
+
+该结果只有一次飞行，不能标记为三次独立冷启动 GPU 验收通过；GPU P1--P3 也没有因此
+获得独立阶段验收标签。
+
 ## 2026-09-17：当前代码 CPU P4 冻结验收
 
 运行提交 `a4d3fb33209b73f2a3c1514ff4709848db28d1b9` 在固定的 llvmpipe CPU 软件渲染、

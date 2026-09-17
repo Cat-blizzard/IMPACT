@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "scope": "Current-version strict GPU no-arm smoke and one GPU P4 development flight",
+  "validated_git_commit": "a4d3fb33209b73f2a3c1514ff4709848db28d1b9",
+  "source_sha256": "2664b62298ef224eed706c09b26a2ca228d6111c13c3e667f7668fdcc6521862",
+  "build": {
+    "install_root": "/var/tmp/impact-1000-846fb8ab40/install",
+    "manifest_path": "/var/tmp/impact-1000-846fb8ab40/build-manifest.json",
+    "manifest_sha256": "b1b4d492fb8b4d020c69c01f2b4218daaa7d332d5f1f44621c19676fd1d54615",
+    "installed_files_checked": 1667,
+    "runtime_verification_sha256": "85047b6a1dce35068a5ea62b29387f7d4b6bb47fd74671167d6a89c1b7d17043"
+  },
+  "dependencies": {
+    "ardupilot_commit": "2a3dc4b7bf2507120f7378a7b2fde73185e0c325",
+    "arducopter_sha256": "754e5eafaa42d6cd6fdbc3337015cb1620270d202daeac297f0916cb3d6d7484",
+    "ardupilot_gazebo_commit": "082a0fe231f6e63bc8d1598f1cba461d9e2ea7f5",
+    "ardupilot_plugin_sha256": "e5d11ebddd30be0ff484c9c8052bff47739f35bd9a3b24cc5edd3ebfd3fa7281",
+    "egl_terminate_guard_sha256": "1a972bda118a909950ade41e51f1c6216b500c39cf21584af5a888b9e64010a6",
+    "runtime_dependencies_file_sha256": "17a675003b21230c2c194df158b0a73b613c0b3ec2c43814a3e10fb325e0590c"
+  },
+  "configuration": {
+    "profile": "server_gpu",
+    "renderer": "D3D12 (NVIDIA RTX PRO 6000 Blackwell Workstation Edition)",
+    "hardware_accelerated": true,
+    "nvidia_driver": "596.49",
+    "gazebo_sim_version": "8.15.0",
+    "world_sha256": "758e70987bbd60ac60198d2654b892b476b1bf7f534935b0eeae2f7fe6dcac59",
+    "flight_parameters_sha256": "2d17c98d4e1df36c92aabf0e5efcfac72dfcc72c6027f3a2ae1a24e6e5ac2ece",
+    "fast_lio_sha256": "a9c1ed76f6b7df45d983477f66bde06ea76234c54e15424276c1e88b4d8e99ad",
+    "sensor_bridge_sha256": "b235ba27a8f5df24d2a83827de823d062ea5ca892fd6c89ed2f7604e331a8f3f"
+  },
+  "runs": [
+    {
+      "id": "p4_gpu_a4d3fb3_group01_smoke45",
+      "mode": "NO_ARM_SMOKE",
+      "status": "PASS",
+      "result_directory": "experiments/results/external_nav/p4_gpu_a4d3fb3_group01_smoke45",
+      "observation_seconds": 45.007673918036744,
+      "never_armed": true,
+      "mission_node_absent": true,
+      "external_nav_healthy_samples": 229,
+      "external_nav_unhealthy_samples": 0,
+      "ros_external_nav_output_count": 638,
+      "dataflash_visp_count": 627,
+      "dataflash_visp_max_receive_gap_s": 0.16793699999999934,
+      "dataflash_visp_gaps_ge_300ms": 0,
+      "summary_sha256": "e3fea59203f30840c3893bcd3f1b8dcfb9df9dc571fde5a1c54b407d53528669",
+      "observation_sha256": "50b1e4a959941fc72c415d8d4ca37d54bdf9ac0043b7311b4cb36d07c51a584f",
+      "runtime_audit_sha256": "e8be72000d808ccfa78a7bfefbbf46e6c0fc074e9927c925f49ad538c7431f06",
+      "health_diagnostic_sha256": "aa3856b2123d4eaddcbffbeaf4889c70d29b0437d821c71c907d9d8a5109371b",
+      "rosbag_metadata_sha256": "e5412e790af38a9b6105bde941dfe938923f68f94e0ce38b87d1c7d135b3a15f",
+      "rosbag_db3_sha256": "725a99f0d23239b36555abebea1ef90a6b371806cb005f9581bcd010ec2bd812",
+      "dataflash_bin_sha256": "2b054af8b32ccd8d0e0d0b6c83936fed496686f917af0cdc318c906596c36515"
+    },
+    {
+      "id": "p4_gpu_a4d3fb3_group01_run01",
+      "mode": "P4_FLIGHT",
+      "status": "PASS",
+      "result_directory": "experiments/results/external_nav/p4_gpu_a4d3fb3_group01_run01",
+      "mission_elapsed_seconds": 56.201,
+      "single_arm_request": true,
+      "landed_and_disarmed": true,
+      "localization_matched_samples": 770,
+      "localization_ate_rms_m": 0.004411261826345657,
+      "localization_error_max_m": 0.011595710466998962,
+      "localization_error_final_m": 0.004614466422376584,
+      "dataflash_visp_count": 773,
+      "dataflash_visp_max_receive_gap_s": 0.16494300000000095,
+      "dataflash_visp_gaps_ge_300ms": 0,
+      "bag_topic_counts": {
+        "odom": 778,
+        "external_nav_out": 778,
+        "fcu_state": 86,
+        "extnav_status": 470,
+        "truth": 4843
+      },
+      "summary_sha256": "68c7e307b7b5ce39b1c5f5075877b0c862face0dd759f710dfd2fbd4d34fac2f",
+      "mission_sha256": "4d71aaa504bd4f084e6538e81e35b1c0f51f5fe68f1f53a34cefa4f1e63c8c7d",
+      "localization_evaluation_sha256": "8b95a0fa47be1a92f751c9110b2007f8235de955b74cd66bf7e6b44e30b26f57",
+      "artifact_validation_sha256": "c41359ed930a0528f5c54840090a28b599540aa7ac9089b4122d9b9c9e25ba29",
+      "runtime_audit_sha256": "4cd3b5da2215c02764a34c05f0097add1e100c40d93db5a0e43e226cfaf19671",
+      "health_diagnostic_sha256": "31622f14a1c06f419da7fe4ad43e6042a3057fd0025e3f0a41f984a917b4657b",
+      "rosbag_metadata_sha256": "a7fc1b49fee703c8b366da90998b7da158dc061f8fe831d29820cfe39fb3b334",
+      "rosbag_db3_sha256": "c183c7d9847b8286946b7464ab9c13daa628a2ffe4d9bfc7b62c7f1fd610442e",
+      "dataflash_bin_sha256": "60e8290ca19f59d1745654cdaafe173f3ee70f02e89c7487a92a45c9cd5753bd"
+    }
+  ],
+  "observations": [
+    "MAVROS emitted Wrong FCU time in both runs and one Time jump detected in the flight; no ROS/ExternalNav stamp rollback or mission failure was observed.",
+    "No VisOdom unhealthy, Gyros inconsistent, Potential Thrust Loss, EKF variance or EKF failsafe message was observed.",
+    "This is one development flight, not a three-cold-start GPU acceptance group."
+  ]
+}
