@@ -74,13 +74,18 @@ class P5MissionNode(P4MissionNode):
     def _finish(self, status: str, reason: str) -> None:
         if self.finalized:
             return
+        state_fresh = self._fcu_state_is_fresh()
+        termination_confirmed = bool(state_fresh and not self.fcu_state.armed)
+        if status == "PASS" and self.task_failure_reason:
+            status, reason = "FAIL", self.task_failure_reason
+        elif status == "PASS" and not termination_confirmed:
+            status, reason = "FAIL", "landing/disarm not confirmed by fresh FCU state"
         self.finalized = True
         self._publish_enable(False)
         self.phase = "DONE" if status == "PASS" else "FAILED"
         self._event(status, reason)
         exploration = self.exploration_status
         adapter = self.ego_status
-        termination_confirmed = bool(self.have_state and not self.fcu_state.armed)
         if termination_confirmed:
             self.termination_reason = self.termination_reason or "FCU disarmed"
         else:
@@ -117,7 +122,7 @@ class P5MissionNode(P4MissionNode):
                 "ego_planned": self.bspline_count >= 1,
                 "ego_forwarded": int(adapter.get("forwarded", 0)) >= 1,
                 "auto_finished": exploration.get("finished") is True,
-                "landed_and_disarmed": not bool(self.fcu_state.armed),
+                "landed_and_disarmed": termination_confirmed,
             },
             "task_result": {
                 "success": status == "PASS",
@@ -128,6 +133,7 @@ class P5MissionNode(P4MissionNode):
                 "reason": self.termination_reason,
                 "armed": bool(self.fcu_state.armed),
                 "mode": self.fcu_state.mode,
+                "state_fresh": state_fresh,
             },
             "health_samples": self.health_samples,
             "final": {
@@ -157,15 +163,27 @@ class P5MissionNode(P4MissionNode):
             self._publish_enable(True)
         self._poll_command()
         now = time.monotonic()
-        if now - self.started > float(self.get_parameter("mission_timeout_s").value):
+        if self.phase in self.TERMINATION_PHASES:
+            termination_started = self.termination_started
+            if termination_started is None:
+                termination_started = self.phase_started
+            if now - termination_started > float(self.get_parameter("failsafe_termination_timeout_s").value):
+                confirmed = self._fcu_state_is_fresh() and not self.fcu_state.armed
+                self.termination_reason = ("FCU disarmed at termination deadline" if confirmed
+                                           else "FCU termination not confirmed before timeout")
+                self._event("TERMINATION_CONFIRMED" if confirmed else "TERMINATION_UNCONFIRMED",
+                            self.termination_reason)
+                self._finish("FAIL", self.task_failure_reason or "termination deadline exceeded")
+                return
+        elif now - self.started > float(self.get_parameter("mission_timeout_s").value):
             self._failure_to_land(f"mission timeout in {self.phase}")
             return
         if self.have_state and not self.fcu_state.connected and self.phase != "WAIT_FCU":
-            if self.phase != "FAILSAFE_WAIT":
+            if self.phase not in self.TERMINATION_PHASES:
                 self._flight_health_loss(self._health_snapshot())
-            if self.phase != "FAILSAFE_WAIT":
+            if self.phase not in self.TERMINATION_PHASES:
                 self._finish("FAIL", f"FCU disconnected in {self.phase}")
-                return
+            return
 
         if self.phase in ("SET_GUIDED", "ARM", "TAKEOFF", "ASCEND", "EXPLORE_START", "EXPLORE"):
             _, snapshot = self._observe_health(require_params=False)
@@ -175,14 +193,13 @@ class P5MissionNode(P4MissionNode):
                     return
 
         if self.phase == "FAILSAFE_WAIT":
-            if self.have_state and not self.fcu_state.armed:
+            if self._fcu_state_is_fresh() and not self.fcu_state.armed:
                 self.termination_reason = "FCU disarmed after health loss"
                 self._event("TERMINATION_CONFIRMED", self.termination_reason)
                 self._finish("FAIL", f"{self.task_failure_reason or 'flight health lost'}; termination confirmed")
-            elif now - self.phase_started > float(self.get_parameter("failsafe_termination_timeout_s").value):
-                self.termination_reason = "FCU termination not confirmed before timeout"
-                self._event("TERMINATION_UNCONFIRMED", self.termination_reason)
-                self._finish("FAIL", f"{self.task_failure_reason or 'flight health lost'}; termination unconfirmed")
+            elif (self._fcu_state_is_fresh() and self.fcu_state.connected
+                  and self.fcu_state.armed and str(self.fcu_state.mode).upper() != "LAND"):
+                self._transition("LAND", "fresh FCU state restored; complete failure termination")
             return
 
         if self.phase == "WAIT_FCU":
@@ -241,7 +258,10 @@ class P5MissionNode(P4MissionNode):
             self._send_command("land")
         elif self.phase == "DESCEND":
             self._publish_enable(False)
-            if not self.fcu_state.armed and abs(self.current_xyz[2] - self.origin_xyz[2]) <= 0.35:
+            odom_fresh = self.have_odom and now - self.current_odom_last_wall <= float(
+                self.get_parameter("health_odom_max_age_s").value)
+            if (self._fcu_state_is_fresh() and not self.fcu_state.armed and odom_fresh
+                    and abs(self.current_xyz[2] - self.origin_xyz[2]) <= 0.35):
                 checks_ready = (
                     int(self.exploration_status.get("goals_published", 0)) >= 1
                     and self.exploration_status.get("finished") is True
@@ -249,8 +269,6 @@ class P5MissionNode(P4MissionNode):
                     and int(self.ego_status.get("forwarded", 0)) >= 1
                 )
                 self._finish("PASS" if checks_ready else "FAIL", "autonomous P5 exploration and landing completed")
-            elif now - self.phase_started > 60.0:
-                self._finish("FAIL", "landing/disarm not confirmed")
 
 
 def main(args=None) -> None:

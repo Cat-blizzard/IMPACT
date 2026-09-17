@@ -1,8 +1,8 @@
 """P5 0.10 m observed voxel projection and autonomous Frontier selector.
 
-The node consumes only FAST-LIO odometry and the simulated LiDAR.  Gazebo
-ground truth is intentionally absent from this process.  One transformed
-cloud feeds EGO's 3-D collision map while a persistent 0.10 m observed/free/
+The node consumes only FAST-LIO odometry and its registered LiDAR cloud. Gazebo
+ground truth is intentionally absent from this process. The registered 3-D
+cloud feeds EGO's collision map while a persistent 0.10 m observed/free/
 occupied projection supplies Frontier extraction and viewpoint selection.
 """
 
@@ -154,6 +154,7 @@ class P5FrontierNode(Node):
         self.declare_parameter("map_half_extent_m", 9.5)
         self.declare_parameter("flight_altitude_m", 2.0)
         self.declare_parameter("minimum_mapping_range_m", 0.80)
+        self.declare_parameter("input_cloud_topic", "/cloud_registered")
         self.declare_parameter("clearance_m", 0.65)
         self.declare_parameter("information_radius_m", 2.0)
         self.declare_parameter("distance_lambda", 0.18)
@@ -198,11 +199,13 @@ class P5FrontierNode(Node):
         self.marker_pub = self.create_publisher(Marker, "/xq/p5/frontiers", 10)
         self.status_pub = self.create_publisher(String, "/xq/p5/exploration/status", 10)
         self.create_subscription(Odometry, "/localization/odom", self._odom_cb, reliable)
-        self.create_subscription(PointCloud2, "/livox/lidar", self._cloud_cb, reliable)
+        self.create_subscription(
+            PointCloud2, str(self.get_parameter("input_cloud_topic").value), self._cloud_cb, reliable
+        )
         self.create_subscription(Bool, "/xq/p5/exploration/enable", self._enable_cb, 10)
         self.create_timer(1.0, self._tick)
         self.get_logger().info(
-            "P5 Frontier: 0.10 m map, J=I-lambda*d, FAST-LIO+LiDAR only (no ground truth)"
+            "P5 Frontier: 0.10 m map, J=I-lambda*d, registered FAST-LIO cloud only"
         )
 
     def _inside(self, ix: int, iy: int) -> bool:
@@ -256,43 +259,38 @@ class P5FrontierNode(Node):
         self.odom_pub.publish(output)
 
     def _cloud_cb(self, message: PointCloud2) -> None:
-        if not self.have_odom:
+        if not self.have_odom or message.header.frame_id != "xq_lio_map":
             return
         stamp_s = float(message.header.stamp.sec) + 1e-9 * float(message.header.stamp.nanosec)
         if stamp_s - self.last_scan_stamp < 0.18:
             return
         self.last_scan_stamp = stamp_s
-        sensor = _cloud_xyz(message)
-        if len(sensor) == 0:
+        # FAST-LIO already undistorts and transforms this cloud at its own scan
+        # timestamp. Reapplying the latest asynchronous odometry pose can move
+        # a real obstacle away from the trajectory while leaving a fresh stamp.
+        mapped = _cloud_xyz(message).astype(np.float64, copy=False)
+        if len(mapped) == 0:
             return
-        try:
-            rotation = _rotation(self.orientation)
-        except ValueError:
-            return
-        # FAST-LIO's calibrated Mid-360 -> IMU extrinsic from xq_p4.yaml.
-        sensor = sensor.astype(np.float64, copy=False)
-        sensor += np.array((0.04, 0.0, 0.12), dtype=np.float64)
-        mapped = sensor @ rotation.T + self.position
-        ranges = np.linalg.norm(sensor, axis=1)
-        valid = np.isfinite(mapped).all(axis=1) & (ranges >= 0.35) & (ranges <= 30.0)
+        ranges = np.linalg.norm(mapped - self.position, axis=1)
+        valid = np.isfinite(mapped).all(axis=1) & (ranges <= 30.0)
         mapped = mapped[valid]
-        mapped_ranges = ranges[valid]
         if len(mapped) == 0:
             return
 
         # Voxelize before feeding EGO.  This is its required 0.10 m navigation
         # map resolution and bounds the planner's cloud callback cost.
-        minimum_mapping_range = float(self.get_parameter("minimum_mapping_range_m").value)
-        planner_points = mapped[mapped_ranges >= minimum_mapping_range]
-        keys = np.floor(planner_points / self.resolution).astype(np.int32)
+        # The Frontier ray-casting blind zone below must never remove a valid
+        # obstacle from the 3-D cloud consumed by EGO.
+        keys = np.floor(mapped / self.resolution).astype(np.int32)
         _, unique = np.unique(keys, axis=0, return_index=True)
-        planner_cloud = planner_points[np.sort(unique)].astype(np.float32)
+        planner_cloud = mapped[np.sort(unique)].astype(np.float32)
         self.cloud_pub.publish(_xyz_cloud(planner_cloud, message.header.stamp, "xq_lio_map"))
 
         # 2-D observed/free/occupied projection at the flight corridor.  The
         # closest return in each angular bin gives deterministic ray casting.
         delta = mapped[:, :2] - self.position[:2]
         radial = np.linalg.norm(delta, axis=1)
+        minimum_mapping_range = float(self.get_parameter("minimum_mapping_range_m").value)
         flight_altitude = float(self.get_parameter("flight_altitude_m").value)
         # The Frontier map is a horizontal navigation slice.  Projecting
         # steep floor/ceiling returns into XY creates a false obstacle ring

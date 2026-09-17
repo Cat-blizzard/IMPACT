@@ -44,6 +44,21 @@ def digest(path):
     return h.hexdigest()
 
 
+def protocol_hash(protocol):
+    return hashlib.sha256(json.dumps(protocol, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def matches_formal_protocol(row, protocol):
+    matrix = protocol["matrix"]
+    return (row.get("run_kind") == "formal"
+            and row.get("protocol_sha256") == protocol_hash(protocol)
+            and all(row.get(key) == protocol[key] for key in
+                    ("profile", "source_sha256", "config_sha256", "calibration_sha256"))
+            and row.get("scenario") in matrix["scenarios"]
+            and row.get("strategy") in matrix["strategies"]
+            and row.get("seed") in matrix["test_seeds"])
+
+
 def capture(command, timeout=20):
     try:
         p = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -229,13 +244,39 @@ def classify_outcome(exit_code, mission, evaluation):
     return dict(status="PASS" if success else "FAIL", completed_record=completed)
 
 
+def cleanup_audit(run, smoke=False):
+    path = run / "cleanup-processes.jsonl"
+    records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    required = {"sitl", "mavros", "gazebo", "rosbag", "stack"}
+    if not smoke:
+        required.add("mission")
+    labels = {item.get("label") for item in records}
+    logs = "\n".join((run / name).read_text(errors="replace")
+                     for name in ("stack.log", "mavros.log", "gazebo.log", "sitl.log")
+                     if (run / name).is_file())
+    markers = [marker for marker in ("Traceback (most recent call last)",
+               "terminate called after throwing", "Segmentation fault", "core dumped",
+               "process has died") if marker in logs]
+    passed = (required <= labels and len(labels) == len(records)
+              and all(not item.get("residual", True) for item in records)
+              and all(item.get("initial_alive") or item.get("label") == "rosbag"
+                      for item in records)
+              and all(item.get("wait_status") in (0, 130, 143)
+                      or (item.get("label") == "rosbag" and item.get("wait_status") == 127)
+                      for item in records) and not markers)
+    return dict(passed=passed, processes=records, log_errors=markers)
+
+
 def experiment(args):
     root = Path(args.results).resolve()
     run = root / f"{args.scenario}-{args.strategy}-s{args.seed}-{time.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
     run.mkdir(parents=True)
     report = dict(schema_version=1, validation="SIMULATED", status="PREPARING", profile=args.profile,
-                  scenario=args.scenario, strategy=args.strategy, seed=args.seed,
-                  session_id=uuid.uuid4().hex, source_sha256=source_hash(), config_sha256=digest(ROOT/"config/impact_v1.json"))
+                   scenario=args.scenario, strategy=args.strategy, seed=args.seed,
+                   run_kind=getattr(args, "run_kind", "smoke" if getattr(args, "smoke", False) else "development"),
+                   session_id=uuid.uuid4().hex, source_sha256=source_hash(), config_sha256=digest(ROOT/"config/impact_v1.json"))
+    if report["run_kind"] == "formal":
+        report["protocol_sha256"] = args.protocol_sha256
     report["configuration"] = config()
     write_json(run/"run.json", report)
     try:
@@ -248,9 +289,11 @@ def experiment(args):
             raise RuntimeError("full build is missing or source changed; rebuild first")
         write_json(run/"build-manifest.json", manifest)
         shutil.copy2(ROOT/config()["calibration"], run/"calibration.json")
-        generate(ROOT, run, args.scenario, args.seed)
+        generate(ROOT, run, args.scenario, args.seed,
+                 sensor_noise_std_m=report["configuration"]["sensor_noise_std_m"])
         write_json(run/"config.json", config())
         report["world_sha256"] = digest(run/"world.sdf")
+        report["vehicle_model_sha256"] = digest(run/"models/xq_iris_mid360_ardupilot/model.sdf")
         report["calibration_sha256"] = digest(run/"calibration.json")
         report["status"] = "RUNNING"
         write_json(run/"run.json", report)
@@ -271,36 +314,20 @@ def experiment(args):
                 raise RuntimeError("launcher interrupted or wall watchdog expired")
         if getattr(args, "smoke", False):
             smoke = read_json(run/"smoke.json")
-            cleanup = []
-            cleanup_file = run / "cleanup-processes.jsonl"
-            if cleanup_file.is_file():
-                cleanup = [json.loads(line) for line in cleanup_file.read_text().splitlines() if line.strip()]
-            labels = {item.get("label") for item in cleanup}
-            required = {"sitl", "mavros", "gazebo", "rosbag", "stack"}
-            expected_statuses = {0, 130, 143}
-            cleanup_logs = "\n".join((run/name).read_text(errors="replace")
-                                      for name in ("stack.log", "mavros.log", "gazebo.log", "sitl.log")
-                                      if (run/name).is_file())
-            cleanup_log_errors = [marker for marker in (
-                "Traceback (most recent call last)", "terminate called after throwing",
-                "Segmentation fault", "core dumped", "process has died")
-                if marker in cleanup_logs]
-            cleanup_passed = (required <= labels
-                              and all(not item.get("residual", True) for item in cleanup)
-                              and all(item.get("initial_alive") or item.get("label") == "rosbag" for item in cleanup)
-                              and all(item.get("wait_status") in expected_statuses
-                                      or (item.get("label") == "rosbag" and item.get("wait_status") == 127)
-                                      for item in cleanup)
-                              and not cleanup_log_errors)
-            smoke.update(cleanup_processes=cleanup, cleanup_log_errors=cleanup_log_errors,
-                         cleanup_passed=cleanup_passed)
+            cleanup = cleanup_audit(run, smoke=True)
+            smoke.update(cleanup_processes=cleanup["processes"], cleanup_log_errors=cleanup["log_errors"],
+                         cleanup_passed=cleanup["passed"])
             write_json(run/"smoke.json", smoke)
-            passed = code == 0 and smoke.get("passed") is True and cleanup_passed
+            passed = code == 0 and smoke.get("passed") is True and cleanup["passed"]
             report.update(smoke=smoke, launcher_exit_code=code,
                           status="PASS" if passed else "ERROR", completed_record=passed)
             return run, report
         mission = read_json(run/"mission.json")
         evaluation = read_json(run/"evaluation.json")
+        cleanup = cleanup_audit(run)
+        report["cleanup"] = cleanup
+        if not cleanup["passed"]:
+            raise RuntimeError("launcher cleanup failed; inspect cleanup-processes.jsonl")
         performance(run)
         report.update(mission=mission, evaluation=evaluation, launcher_exit_code=code)
         # A task failure is a valid experimental outcome, not an infrastructure pass.
@@ -334,7 +361,7 @@ def batch(args):
     completed = set()
     for file in root.glob("*/run.json"):
         r = read_json(file)
-        if r.get("completed_record") and r.get("source_sha256") == frozen_hash:
+        if r.get("completed_record") and matches_formal_protocol(r, protocol):
             completed.add((r["scenario"],r["strategy"],r["seed"]))
     for scenario in config()["scenarios"]:
         for seed in config()["test_seeds"]:
@@ -344,6 +371,7 @@ def batch(args):
                 if source_hash() != frozen_hash or external_fingerprint() != protocol["external"]:
                     raise RuntimeError("source/external binaries changed during batch")
                 args.scenario, args.strategy, args.seed = scenario, strategy, seed
+                args.run_kind, args.protocol_sha256 = "formal", protocol_hash(protocol)
                 _, report = experiment(args)
                 summarize(root)
                 if report["status"] == "ERROR" or not report.get("completed_record"):
@@ -379,6 +407,7 @@ def validate_server(args):
         cases=[("normal","baseline"),("normal","recovery")]+[("recoverable",s) for s in config()["strategies"]]
         for scenario,strategy in cases:
             args.scenario,args.strategy,args.seed=scenario,strategy,1000
+            args.run_kind="validation"
             run,report=experiment(args)
             if not report.get("completed_record") or (scenario == "normal" and report["status"] != "PASS"):
                 raise RuntimeError(f"stage failed: {run}")
@@ -411,6 +440,12 @@ def performance(run):
 
 def summarize(root):
     rows = [read_json(p) for p in sorted(Path(root).glob("*/run.json"))]
+    protocol_path = Path(root) / "protocol.json"
+    matrix = config()
+    if protocol_path.is_file():
+        protocol = read_json(protocol_path)
+        matrix = protocol["matrix"]
+        rows = [row for row in rows if matches_formal_protocol(row, protocol)]
     groups = {}
     # Preserve failed tasks; retries remain separate records and are explicitly marked.
     for row in rows:
@@ -440,8 +475,8 @@ def summarize(root):
                 task_success=int(row["status"] == "PASS"), timeout=int(mission.get("task_reason") == "TASK_TIMEOUT"),
                 task_time_sim_s=mission.get("elapsed_sim_s"), **{k:evaluation.get(k) for k in columns[8:]}))
     statistics = {}
-    for scenario in config()["scenarios"]:
-        for strategy in config()["strategies"]:
+    for scenario in matrix["scenarios"]:
+        for strategy in matrix["strategies"]:
             tasks = [v for k,v in selected.items() if k[:2] == (scenario,strategy)]
             if tasks:
                 statistics[scenario+"/"+strategy] = dict(n_tasks=len(tasks),

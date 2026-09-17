@@ -101,7 +101,7 @@ class SITLSupervisor(Node):
         self.status_pub = self.create_publisher(String, "/impact/status", 10)
         for kind, topic, callback in [
             (Odometry, "/localization/odom", lambda m: self.input("odom", m)),
-            (PointCloud2, "/xq/p5/cloud_map", lambda m: self.input("cloud", m)),
+            (PointCloud2, "/cloud_registered", lambda m: self.input("cloud", m)),
             (DirectionalIntegrity, "/integrity/directional", lambda m: self.input("integrity", m)),
             (InformationMap, "/integrity/information_map", lambda m: self.input("information", m))]:
             self.create_subscription(kind, topic, callback, qos_profile_sensor_data)

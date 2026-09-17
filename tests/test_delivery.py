@@ -8,19 +8,54 @@ from impact_scenarios import scenario_geometry, generate
 from impact_runtime_audit import check_graph
 from impact_runtime_audit import check_extnav
 from startup_smoke_monitor import sample_metric, service_event
+from analyze_p13_gate import recorded_world as p13_recorded_world
+from analyze_p14_gate import recorded_world as p14_recorded_world
 
 
 def test_seed_changes_real_geometry_and_paired_arms_share_world(tmp_path):
     a=scenario_geometry("recoverable",7)
     assert a == scenario_geometry("recoverable",7)
     assert a != scenario_geometry("recoverable",8)
-    assert scenario_geometry("unrecoverable",7)["seed_effect"].startswith("bridge")
+    assert scenario_geometry("unrecoverable",7)["seed_effect"].startswith("Gazebo")
     generate(impact.ROOT,tmp_path,"normal",7)
     world=(tmp_path/"world.sdf").read_text()
     assert "ArduPilot" not in world  # plugin belongs to the included actuation model
     assert "xq_iris_mid360_ardupilot" in world
     assert "VelocityControl" not in world
     assert "feature_0" in world
+    model = (tmp_path/"models/xq_iris_mid360_ardupilot/model.sdf").read_text()
+    assert "<stddev>0.015</stddev>" in model
+
+
+def test_sensor_noise_is_written_to_run_local_gazebo_model(tmp_path):
+    generate(impact.ROOT, tmp_path, "normal", 7, sensor_noise_std_m=0.027)
+    model = (tmp_path/"models/xq_iris_mid360_ardupilot/model.sdf").read_text()
+    assert "<stddev>0.027</stddev>" in model
+    assert "<stddev>0.015</stddev>" in (impact.ROOT/"src/xq_gz_assets/models/xq_iris_mid360_ardupilot/model.sdf").read_text()
+
+
+def test_historical_gate_world_identity_requires_each_trial_record(tmp_path):
+    trial = tmp_path / "trial" / "result.json"
+    trial.parent.mkdir()
+    assert p13_recorded_world(trial) is None
+    assert p14_recorded_world(str(trial)) is None
+    (trial.parent / "run.env").write_text("profile=low_50ms\nworld_sha256=" + "a" * 64 + "\n")
+    assert p13_recorded_world(trial) == "a" * 64
+    assert p14_recorded_world(str(trial)) == "a" * 64
+
+
+def test_cleanup_audit_rejects_residuals_and_missing_mission(tmp_path):
+    labels = ("sitl", "mavros", "gazebo", "rosbag", "stack", "mission")
+    records = [dict(label=label, initial_alive=True, wait_status=0, residual=False)
+               for label in labels]
+    path = tmp_path / "cleanup-processes.jsonl"
+    path.write_text("\n".join(map(json.dumps, records)) + "\n")
+    assert impact.cleanup_audit(tmp_path)["passed"]
+    records[-1]["residual"] = True
+    path.write_text("\n".join(map(json.dumps, records)) + "\n")
+    assert not impact.cleanup_audit(tmp_path)["passed"]
+    path.write_text("\n".join(map(json.dumps, records[:-1])) + "\n")
+    assert not impact.cleanup_audit(tmp_path)["passed"]
 
 
 def test_failed_preflight_is_preserved_and_bundled(tmp_path,monkeypatch):
@@ -181,8 +216,15 @@ def test_batch_resume_preserves_failed_outcome(tmp_path,monkeypatch):
     monkeypatch.setattr(impact,"external_fingerprint",lambda:{})
     marker=tmp_path/"validation.json"
     impact.write_json(marker,dict(status="PASS",source_sha256="frozen",profile="server_gpu",external={}))
-    impact.write_json(tmp_path/"failed"/"run.json",dict(completed_record=True,status="FAIL",source_sha256="frozen",
+    protocol = dict(source_sha256="frozen", config_sha256="hash", profile="server_gpu",
+                    calibration_sha256="hash", matrix=cfg, external={})
+    impact.write_json(tmp_path/"failed"/"run.json",dict(completed_record=True,status="FAIL",
+        run_kind="formal", protocol_sha256=impact.protocol_hash(protocol), source_sha256="frozen",
+        config_sha256="hash", calibration_sha256="hash", profile="server_gpu",
         scenario="normal",strategy="recovery",seed=0,session_id="failed"))
+    impact.write_json(tmp_path/"smoke"/"run.json",dict(completed_record=True,status="PASS",
+        run_kind="smoke", source_sha256="frozen", config_sha256="hash", profile="local_cpu",
+        scenario="normal",strategy="recovery",seed=1,session_id="smoke"))
     calls=[]
     def run(args):
         calls.append(args.seed)
@@ -190,6 +232,8 @@ def test_batch_resume_preserves_failed_outcome(tmp_path,monkeypatch):
     monkeypatch.setattr(impact,"experiment",run)
     impact.batch(argparse.Namespace(jobs=1,profile="server_gpu",results=str(tmp_path),validation=str(marker)))
     assert calls == [1]
+    summary = impact.read_json(tmp_path/"summary.json")["groups"]["normal/recovery"]
+    assert summary["attempts"] == 1
 
 
 def test_stage_a_report_is_per_run_and_summary_accumulates(tmp_path, monkeypatch):

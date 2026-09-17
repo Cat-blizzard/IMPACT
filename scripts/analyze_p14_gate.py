@@ -14,6 +14,15 @@ def load(path: str) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def recorded_world(path: str) -> str | None:
+    record = Path(path).parent / "run.env"
+    if not record.is_file():
+        return None
+    values = dict(line.split("=", 1) for line in record.read_text(encoding="utf-8").splitlines()
+                  if "=" in line)
+    return values.get("world_sha256")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--matrix", required=True)
@@ -27,12 +36,15 @@ def main() -> int:
     emergency = load(args.emergency)
     p12 = load(args.p12_retention)
     p13 = load(args.p13_retention)
+    world_sha256 = hashlib.sha256(Path(args.world).read_bytes()).hexdigest()
     checks = {
         "matrix_trial_pass": matrix.get("status") == "PASS",
         "persistent_lidar_emergency_pass": emergency.get("status") == "PASS",
         "p12_dynamic_obstacle_retained": p12.get("status") == "PASS",
         "p13_latency_safety_retained": p13.get("status") == "PASS",
-        "same_accepted_world": True,
+        "same_accepted_world": all(recorded_world(path) == world_sha256 for path in
+                                   (args.matrix, args.emergency, args.p12_retention,
+                                    args.p13_retention)),
     }
     result = {
         "schema_version": 1,
@@ -43,7 +55,7 @@ def main() -> int:
         "emergency_metrics": emergency.get("metrics", {}),
         "p12_retention_metrics": p12.get("metrics", {}),
         "p13_retention_metrics": p13.get("metrics", {}),
-        "world_sha256": hashlib.sha256(Path(args.world).read_bytes()).hexdigest(),
+        "world_sha256": world_sha256,
         "ground_truth_policy": "evaluation_only",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
     }

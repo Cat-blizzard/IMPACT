@@ -1,6 +1,10 @@
 import numpy as np
+from types import SimpleNamespace
+from builtin_interfaces.msg import Time
 
-from xq_autonomy.p5_frontier_node import _known_viewpoint_candidates, _mark_pose_free
+from xq_autonomy.p5_frontier_node import (
+    P5FrontierNode, _cloud_xyz, _known_viewpoint_candidates, _mark_pose_free, _xyz_cloud,
+)
 
 
 def test_pose_marks_unknown_cell_free() -> None:
@@ -76,3 +80,26 @@ def test_viewpoint_candidates_require_extra_known_clearance() -> None:
         safe_free=safe_free,
     )
     assert candidates == [(2, 3)]
+
+
+def test_registered_cloud_retains_near_obstacle_without_latest_odom_transform() -> None:
+    node = object.__new__(P5FrontierNode)
+    node.have_odom = True
+    node.position = np.asarray((1., 0., 2.))  # later odometry must not move the scan
+    node.last_scan_stamp = -float("inf")
+    node.resolution, node.origin, node.size = .1, -2., 40
+    node.free = np.zeros((40, 40), dtype=bool)
+    node.occupied = np.zeros_like(node.free)
+    node.scan_count = 0
+    published = []
+    node.cloud_pub = SimpleNamespace(publish=published.append)
+    node.get_parameter = lambda name: SimpleNamespace(value={
+        "minimum_mapping_range_m": .8, "flight_altitude_m": 2.,
+    }[name])
+    stamp = Time(sec=10)
+    cloud = _xyz_cloud(np.asarray(((.5, 0., 2.),), dtype=np.float32), stamp, "xq_lio_map")
+    node._cloud_cb(cloud)
+    assert len(published) == 1
+    np.testing.assert_array_equal(_cloud_xyz(published[0])[0],
+                                  np.asarray((.5, 0., 2.), dtype=np.float32))
+    assert published[0].header.stamp == stamp

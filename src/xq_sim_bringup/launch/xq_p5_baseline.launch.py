@@ -120,6 +120,8 @@ def generate_launch_description() -> LaunchDescription:
                     {
                         "use_sim_time": True,
                         "integrity_geometry.enable": LaunchConfiguration("integrity_geometry_enable"),
+                        "publish.scan_publish_en": True,
+                        "publish.dense_publish_en": False,
                     },
                 ],
             ),

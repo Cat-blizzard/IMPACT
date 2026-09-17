@@ -245,6 +245,7 @@ class P14ControllerNode(P13FlightControllerNode):
         )
         if (
             self._p14_integrity_recovery_active
+            and mode == SafetyMode.RECOVERY
             and self._selected is None
             and local_recovery_clear
             and not self.faults.ids(now_s)

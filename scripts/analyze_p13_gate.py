@@ -13,6 +13,15 @@ def load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def recorded_world(path: Path) -> str | None:
+    record = path.parent / "run.env"
+    if not record.is_file():
+        return None
+    values = dict(line.split("=", 1) for line in record.read_text(encoding="utf-8").splitlines()
+                  if "=" in line)
+    return values.get("world_sha256")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--low", type=Path, required=True)
@@ -51,7 +60,9 @@ def main() -> int:
         "both_latency_trials_pass": low["status"] == "PASS" and high["status"] == "PASS",
         "p12_capability_retained_both_trials": low_p12["status"] == "PASS"
         and high_p12["status"] == "PASS",
-        "same_world_geometry": bool(args.world_sha256),
+        "same_world_geometry": (len(args.world_sha256) == 64 and
+                                all(recorded_world(path) == args.world_sha256 for path in
+                                    (args.low, args.high, args.low_p12, args.high_p12))),
         "frozen_50_vs_200_ms_profiles": low["profile"] == "low_50ms"
         and high["profile"] == "high_200ms",
         "high_p99_is_larger": p99_delta

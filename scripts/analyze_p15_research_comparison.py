@@ -244,9 +244,12 @@ def main() -> int:
             >= float(thresholds["minimum_pl_coverage_rate"])
             for variant in VARIANTS
         ),
-        "constrained_no_realized_safety_violation": int(
-            constrained.get("gt_safety_violation_count", -1)
-        ) <= int(thresholds["maximum_constrained_safety_violations"]),
+        "constrained_no_realized_safety_violation": (
+            isinstance(constrained.get("gt_safety_violation_count"), int)
+            and not isinstance(constrained["gt_safety_violation_count"], bool)
+            and 0 <= constrained["gt_safety_violation_count"]
+            <= int(thresholds["maximum_constrained_safety_violations"])
+        ),
         "baseline_exposes_integrity_unavailability": float(
             baseline.get("availability_rate", 1.0)
         ) <= float(thresholds["maximum_baseline_availability_rate"]),

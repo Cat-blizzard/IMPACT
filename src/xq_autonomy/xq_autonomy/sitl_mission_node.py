@@ -168,13 +168,9 @@ class SITLMission(P4MissionNode):
             if self.phase != "LAND":
                 return
             self._send_command("land")
-            if wall-self.phase_started > 30:
-                self._finish("FAIL", "LAND_COMMAND_TIMEOUT")
         elif self.phase == "DESCEND":
             if self._termination_evidence()["confirmed"]:
                 self._finish("PASS" if self.task_success else "FAIL", self.task_reason)
-            elif wall-self.phase_started > 90:
-                self._finish("FAIL", "LANDING_NOT_CONFIRMED")
         else:
             super()._tick()
 
