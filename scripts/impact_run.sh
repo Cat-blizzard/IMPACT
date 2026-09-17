@@ -218,7 +218,7 @@ start rosbag ros2 bag record -o "$run/rosbag" \
  /clock /tf /tf_static /livox/lidar /livox/imu /localization/odom /localization/geometry \
  /xq/p5/cloud_map /xq/p5/navigation_map /xq/p5/exploration/status \
  /impact/information_cloud /grid_map/occupancy_inflate \
- /integrity/directional /integrity/information_map \
+ /integrity/directional /integrity/debug /integrity/information_map \
  /impact/planner_goal /impact/planner_candidate /impact/certified_bspline \
  /impact/authorization /impact/position_cmd /impact/mission_stage /impact/status \
  /impact/arbiter_status /uav1/mavros/state /uav1/mavros/local_position/odom \

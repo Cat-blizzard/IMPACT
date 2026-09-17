@@ -47,7 +47,10 @@ def setup(context):
         # Keep the existing sensor-to-map implementation, but no Frontier owns P16 goals.
         autonomy("xq_p5_frontier", {"map_half_extent_m": 35.},
                  remappings=[("/xq/p5/frontier_goal", "/impact/unused_frontier_goal")]),
-        autonomy("xq_p6_directional_integrity"),
+        autonomy("xq_p6_directional_integrity", {
+            "information_memory_horizon_s": config["configuration"]["integrity_information_memory_horizon_s"],
+            "information_memory_max_frames": config["configuration"]["integrity_information_memory_max_frames"],
+        }),
         autonomy("xq_p10_information_map", {"publish_period_s": 0.2},
                  remappings=[("/xq/p5/cloud_map", "/impact/information_cloud")]),
         Node(package="ego_planner", executable="ego_planner_node", name="impact_ego",

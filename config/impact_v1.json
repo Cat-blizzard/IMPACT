@@ -10,6 +10,8 @@
   "run_timeout_wall_s": 900.0,
   "default_jobs": 1,
   "sensor_noise_std_m": 0.015,
+  "integrity_information_memory_horizon_s": 3.0,
+  "integrity_information_memory_max_frames": 20.0,
   "calibration": "evidence/P7/p7-calibration.json",
   "environment": {"ubuntu": "22.04", "ros": "humble", "gazebo": "harmonic"},
   "notes": "Scenario names describe hypotheses, not established algorithm outcomes. Formal performance requires server validation."

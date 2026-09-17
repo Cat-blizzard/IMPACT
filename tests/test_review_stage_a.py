@@ -207,6 +207,24 @@ def test_stage_a_publishes_registered_cloud_for_information_map():
     assert 'remappings=[("/xq/p5/cloud_map", "/impact/information_cloud")]' in information_map
 
 
+def test_stage_a_freezes_p15_validated_information_memory_contract():
+    configuration = impact.config()
+    assert configuration["integrity_information_memory_horizon_s"] == 3.0
+    assert configuration["integrity_information_memory_max_frames"] == 20.0
+    launch = (impact.ROOT / "src/xq_sim_bringup/launch/impact_sitl.launch.py").read_text()
+    integrity = launch.split('autonomy("xq_p6_directional_integrity"', 1)[1].split(
+        'autonomy("xq_p10_information_map"', 1
+    )[0]
+    assert '"information_memory_horizon_s": config["configuration"]' in integrity
+    assert '"information_memory_max_frames": config["configuration"]' in integrity
+
+
+def test_runtime_bag_records_actual_integrity_memory_configuration():
+    script = (impact.ROOT / "scripts/impact_run.sh").read_text()
+    recorder = script.split("start rosbag ros2 bag record", 1)[1].split("start stack", 1)[0]
+    assert "/integrity/debug" in recorder.split()
+
+
 def test_runtime_graph_probes_retry_required_endpoint_and_record_identity_context():
     script = (impact.ROOT / "scripts/impact_run.sh").read_text()
     probe = script.split("graph_probe() {", 1)[1].split("sha256sum", 1)[0]
