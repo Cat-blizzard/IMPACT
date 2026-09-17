@@ -150,6 +150,22 @@ sha256sum "$ARDUPILOT_ROOT/build/sitl/bin/arducopter" \
 git -C "$ARDUPILOT_ROOT" rev-parse HEAD >"$run/ardupilot-revision.txt"
 git -C "$ARDUPILOT_GAZEBO_ROOT" rev-parse HEAD >"$run/ardupilot-gazebo-revision.txt"
 dpkg-query -W 'ros-humble-*' 'libgz-*' 'gz-*' >"$run/system-packages.txt" 2>&1 || true
+phase="verify_renderer"
+timeout 10 glxinfo -B >"$run/renderer.txt" 2>&1 || {
+  echo "Unable to record the configured renderer." >&2
+  exit 2
+}
+if [[ "$profile" == local_cpu ]] && ! grep -Eiq 'llvmpipe|software rasterizer' "$run/renderer.txt"; then
+  echo "local_cpu did not resolve a software renderer." >&2
+  exit 2
+fi
+if [[ "$profile" == server_gpu ]]; then
+  if ! grep -Eiq 'renderer.*nvidia|device.*nvidia' "$run/renderer.txt" \
+      || grep -Eiq 'llvmpipe|softpipe|software rasterizer' "$run/renderer.txt"; then
+    echo "server_gpu did not resolve the required NVIDIA hardware renderer." >&2
+    exit 2
+  fi
+fi
 if [[ "$profile" == server_gpu ]]; then
   phase="start_gpu_monitor"
   start gpu_monitor nvidia-smi --query-gpu=timestamp,name,uuid,utilization.gpu,memory.used --format=csv -l 1
@@ -188,7 +204,8 @@ phase="wait_localization"
 python3 "$root/scripts/wait_for_odometry.py" --topic /localization/odom --timeout 120 \
   --output "$run/first-odom.json" --diagnostics "$run/first-odom-diagnostics.json"
 phase="wait_integrity"
-timeout 30 ros2 topic echo --no-daemon --once /integrity/directional >"$run/first-integrity.txt"
+python3 "$root/scripts/wait_for_integrity.py" --topic /integrity/directional --timeout 30 \
+  --output "$run/first-integrity.json" --diagnostics "$run/first-integrity-diagnostics.json"
 phase="audit_runtime_graph"
 ros2 daemon stop >"$run/ros-daemon-stop.txt" 2>&1 || true
 timeout 10 ros2 daemon start >"$run/ros-daemon-start.txt" 2>&1
@@ -213,7 +230,7 @@ if [[ "${IMPACT_SMOKE_ONLY:-0}" == 1 ]]; then
     exit 7
   fi
   phase="smoke_observation"
-  python3 "$root/scripts/startup_smoke_monitor.py" --seconds 45 --output "$run/smoke-observation.json"
+  python3 "$root/scripts/startup_smoke_monitor.py" --seconds 30 --output "$run/smoke-observation.json"
   phase="smoke_bag_validation"
   rosbag_pid="$(cat "$run/rosbag.pid")"
   kill -INT -- "-$rosbag_pid" 2>/dev/null || true

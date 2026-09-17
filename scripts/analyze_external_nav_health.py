@@ -21,13 +21,25 @@ from rclpy.serialization import deserialize_message
 from rosidl_runtime_py.utilities import get_message
 
 
-FAULT_TOKENS = (
+BLOCKING_FAULT_TOKENS = (
     "visodom: not healthy",
     "visodom: roll/pitch diff",
     "ekf variance",
     "ekf failsafe",
     "potential thrust loss",
 )
+
+OBSERVATION_TOKENS = (
+    "ekf3 lane switch",
+    "ekf primary changed",
+)
+
+
+def classify_status_text(text: str) -> tuple[str | None, str | None]:
+    lowered = text.strip().lower()
+    fault = next((token for token in BLOCKING_FAULT_TOKENS if token in lowered), None)
+    observation = next((token for token in OBSERVATION_TOKENS if token in lowered), None)
+    return fault, observation
 
 
 def _stamp(message: Any) -> float:
@@ -190,12 +202,14 @@ def read_rosbag(run_dir: Path) -> dict[str, Any]:
             statuses.append({"record_ns": int(record_ns), "status": payload})
         elif topic == "/uav1/mavros/statustext/recv":
             text = str(message.text)
+            fault, observation = classify_status_text(text)
             status_texts.append(
                 {
                     "record_ns": int(record_ns),
                     "severity": int(message.severity),
                     "text": text,
-                    "fault": next((token for token in FAULT_TOKENS if token in text.lower()), None),
+                    "fault": fault,
+                    "observation": observation,
                 }
             )
         elif topic == "/uav1/mavros/state":
@@ -228,6 +242,7 @@ def read_rosbag(run_dir: Path) -> dict[str, Any]:
             "count": len(status_texts),
             "first_fault": next((item for item in status_texts if item["fault"]), None),
             "faults": [item for item in status_texts if item["fault"]][:50],
+            "observations": [item for item in status_texts if item["observation"]][:50],
             "all": status_texts[-200:],
         },
         "state": {
@@ -256,6 +271,7 @@ def read_dataflash(run_dir: Path) -> dict[str, Any]:
         "first_critical_message": None,
         "events": [],
         "critical_events": [],
+        "observation_events": [],
     }
     for path in files:
         reader = DFReader.DFReader_binary(str(path))
@@ -273,12 +289,20 @@ def read_dataflash(run_dir: Path) -> dict[str, Any]:
             time_s = float(time_us) / 1e6
             if name == "MSG":
                 text = str(data.get("Message", ""))
-                fault = next((token for token in FAULT_TOKENS if token in text.lower()), None)
+                fault, observation = classify_status_text(text)
                 if fault:
                     event = {"time_s": time_s, "type": name, "fault": fault, "text": text}
                     messages.append(event)
                     result["events"].append({"source": path.name, **event})
                     result["critical_events"].append({"source": path.name, **event})
+                if observation:
+                    event = {
+                        "time_s": time_s,
+                        "type": name,
+                        "observation": observation,
+                        "text": text,
+                    }
+                    result["observation_events"].append({"source": path.name, **event})
             elif name in ("ERR", "EV", "MODE"):
                 event = {"time_s": time_s, "type": name, **data}
                 messages.append(event)
@@ -349,6 +373,7 @@ def read_dataflash(run_dir: Path) -> dict[str, Any]:
         )
     result["events"].sort(key=lambda item: (item.get("time_s", math.inf), item.get("type", "")))
     result["critical_events"].sort(key=lambda item: item.get("time_s", math.inf))
+    result["observation_events"].sort(key=lambda item: item.get("time_s", math.inf))
     result["first_critical_message"] = (
         result["critical_events"][0] if result["critical_events"] else None
     )

@@ -622,7 +622,7 @@ checks = {
     "dataflash_visp_continuous": visp_continuous,
     "dataflash_receives_at_least_90pct_of_ros_output": isinstance(ratio, (int, float))
     and ratio >= 0.9,
-    "no_critical_fcu_fault": diagnostic.get("dataflash", {}).get(
+    "no_blocking_fcu_fault": diagnostic.get("dataflash", {}).get(
         "first_critical_message"
     ) is None,
 }
@@ -634,6 +634,10 @@ report = {
     "observation": observation,
     "fcu_vision_ingress": ingress,
     "dataflash": dataflash,
+    "fcu_observations": {
+        "dataflash": diagnostic.get("dataflash", {}).get("observation_events", []),
+        "ros": diagnostic.get("rosbag", {}).get("status_text", {}).get("observations", []),
+    },
     "cleanup_processes": cleanup,
     "crash_markers": crash_markers,
 }
@@ -767,12 +771,16 @@ checks = {
     "rosbag_key_topics_have_data": all(int(counts.get(topic, 0)) > 0 for topic in required_topics),
     "dataflash_readable": bool(dataflash) and all(item["size_bytes"] > 0 for item in dataflash),
     "dataflash_has_vision_data": bool(dataflash) and all(item["visp"]["count"] > 0 for item in dataflash),
-    "no_critical_fcu_fault": diagnostic["dataflash"]["first_critical_message"] is None,
+    "no_blocking_fcu_fault": diagnostic["dataflash"]["first_critical_message"] is None,
 }
 report = {"schema_version": 1, "checks": checks, "passed": all(checks.values()),
           "cleanup_processes": cleanup, "cleanup_log_errors": log_errors,
           "rosbag_topic_counts": {topic: counts.get(topic, 0) for topic in required_topics},
           "dataflash": dataflash,
+          "fcu_observations": {
+              "dataflash": diagnostic["dataflash"].get("observation_events", []),
+              "ros": diagnostic["rosbag"]["status_text"].get("observations", []),
+          },
           "first_dataflash_fault": diagnostic["dataflash"]["first_critical_message"],
           "first_ros_fcu_fault": diagnostic["rosbag"]["status_text"]["first_fault"]}
 (run / "artifact-validation.json").write_text(json.dumps(report, indent=2) + "\n")

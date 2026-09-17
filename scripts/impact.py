@@ -477,17 +477,40 @@ def audit_stage_a_authorization(run):
     return report
 
 
+def audit_stage_a_maps(run):
+    """Decode map evidence using the interfaces from the run's bound install."""
+    output = run / "stage-a-map-audit.json"
+    script = ROOT / "scripts/diagnose_stage_a_maps.py"
+    command = [sys.executable, str(script), str(run), "--output", str(output)]
+    manifest_path = run / "build-manifest.json"
+    if sys.platform.startswith("linux") and manifest_path.is_file():
+        install = Path(read_json(manifest_path).get("install_root", ""))
+        if (install / "setup.bash").is_file():
+            command = ["bash", "-c", 'set -e\nsource /opt/ros/humble/setup.bash\nsource "$1/setup.bash"\nexec python3 "$2" "$3" --output "$4"',
+                       "impact-map-audit", str(install), str(script), str(run), str(output)]
+    output.unlink(missing_ok=True)
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode == 0 and output.is_file():
+        try:
+            return read_json(output)
+        except (ValueError, AttributeError):
+            pass
+    report = dict(schema_version=3, gate="STAGE_A_SHARED_MAP_OFFLINE_AUDIT",
+        run=str(run), status="UNVERIFIED", map_content_verified=False, checks={},
+        errors=["Map audit could not complete: " + result.stderr[-2000:]])
+    write_json(output, report)
+    return report
+
+
 def stage_a(args):
     """Run one independent Stage A goal-navigation task and write its gate record."""
     root = Path(args.results).resolve()
     root.mkdir(parents=True, exist_ok=True)
     run, report = experiment(args)
-    map_audit_path = run / "stage-a-map-audit.json"
-    subprocess.run([sys.executable, str(ROOT / "scripts/diagnose_stage_a_maps.py"), str(run),
-                    "--output", str(map_audit_path)], check=True)
     mission = report.get("mission", {})
     evaluation = report.get("evaluation", {})
     authorization_report = audit_stage_a_authorization(run)
+    map_report = audit_stage_a_maps(run)
     events = []
     event_file = run / "events.jsonl"
     if event_file.is_file():
@@ -497,8 +520,6 @@ def stage_a(args):
                     events.append(json.loads(line))
                 except json.JSONDecodeError:
                     pass
-    map_audit = run / "stage-a-map-audit.json"
-    map_report = read_json(map_audit) if map_audit.is_file() else {}
     checks = {
         "protocol_is_stage_a": True,
         "not_legacy_p5_gate": mission.get("gate") != "P5_BASELINE_MAP_FRONTIER_EGO",

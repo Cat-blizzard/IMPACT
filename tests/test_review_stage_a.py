@@ -4,11 +4,12 @@ import json
 import sqlite3
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import yaml
 
 import impact
-from diagnose_stage_a_maps import EXPECTED, audit
+from diagnose_stage_a_maps import EXPECTED, audit, reachable_free_cells
 
 
 def recorded_bag(root, *, missing=None, zero_count=None, wrong_type=None):
@@ -64,6 +65,20 @@ def test_bag_inventory_rejects_escaping_storage_paths(tmp_path):
     result = audit(tmp_path)
     assert result["status"] == "UNVERIFIED" and result["errors"]
     assert not (tmp_path / "outside.db3").exists()
+
+
+def test_reachable_free_cells_does_not_cross_occupied_barrier():
+    grid = np.zeros((5, 7), dtype=np.int8)
+    grid[:, 3] = 100
+    component = reachable_free_cells(grid, (1, 2))
+    assert len(component) == 15
+    assert (5, 2) not in component
+
+
+def test_reachable_free_cells_rejects_unknown_start():
+    grid = np.zeros((3, 3), dtype=np.int8)
+    grid[1, 1] = -1
+    assert reachable_free_cells(grid, (1, 1)) == set()
 
 
 def write_actual_evaluation(root, *, samples=100, collisions=0, clearance=1.):
@@ -168,6 +183,36 @@ def test_failed_audit_process_cannot_reuse_previous_pass(tmp_path, monkeypatch):
     monkeypatch.setattr(impact.subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=2, stderr="decode failed"))
     result = impact.audit_stage_a_authorization(tmp_path)
     assert result["status"] == "INCOMPLETE" and "decode failed" in result["errors"][0]
+
+
+def test_map_audit_uses_run_bound_install(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    install.mkdir()
+    (install / "setup.bash").write_text("# fixture\n")
+    impact.write_json(tmp_path / "build-manifest.json", {"install_root": str(install)})
+
+    def execute(command, **kwargs):
+        assert command[:2] == ["bash", "-c"]
+        assert "source \"$1/setup.bash\"" in command[2]
+        assert command[3] == "impact-map-audit"
+        assert str(install) in command
+        impact.write_json(tmp_path / "stage-a-map-audit.json",
+                          dict(status="READY_FOR_REVIEW", map_content_verified=False))
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(impact.subprocess, "run", execute)
+    assert impact.audit_stage_a_maps(tmp_path)["status"] == "READY_FOR_REVIEW"
+
+
+def test_failed_map_audit_cannot_reuse_previous_pass(tmp_path, monkeypatch):
+    impact.write_json(tmp_path / "stage-a-map-audit.json",
+                      dict(status="MAP_CONTENT_VERIFIED", map_content_verified=True))
+    monkeypatch.setattr(impact.subprocess, "run",
+                        lambda *a, **kw: SimpleNamespace(returncode=2, stderr="decode failed"))
+    result = impact.audit_stage_a_maps(tmp_path)
+    assert result["status"] == "UNVERIFIED"
+    assert result["map_content_verified"] is False
+    assert "decode failed" in result["errors"][0]
 
 
 @pytest.mark.parametrize("status,returncode,expected", [("PASS", 1, "INCOMPLETE"), ("FAIL", 2, "FAIL")])
