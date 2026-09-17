@@ -108,6 +108,43 @@ def test_inflation_alignment_pair_is_latest_within_time_window():
     assert gap == pytest.approx(0.2)
 
 
+def authorization_contract(source="source"):
+    return {"status": "PASS", "physical_stop_verified": False,
+        "build": {"source_sha256": source},
+        "checks": {name: True for name in impact.AUTHORIZATION_CONTRACT_CHECKS}}
+
+
+def test_separate_bound_contract_completes_only_missing_expiry(tmp_path):
+    path = tmp_path / "contract.json"
+    path.write_text(json.dumps(authorization_contract()))
+    contract = impact.review_authorization_contract(path, "source")
+    audit_report = {"status": "INCOMPLETE",
+        "incomplete_reasons": ["lease expiration lacks correlated post-expiry output"],
+        "checks": {"valid_track_observed": True, "revocation_observed": True,
+            "revocation_output_observed": True, "no_recorded_authorization_violation": True},
+        "violations": []}
+    assert contract["verified"]
+    assert impact.authorization_evidence_complete(audit_report, contract)
+
+
+@pytest.mark.parametrize("defect", ["wrong_source", "missing_check", "extra_gap"])
+def test_contract_cannot_cover_unrelated_or_incomplete_flight_evidence(tmp_path, defect):
+    data = authorization_contract("other" if defect == "wrong_source" else "source")
+    if defect == "missing_check":
+        data["checks"]["expired_lease_brakes"] = False
+    path = tmp_path / "contract.json"
+    path.write_text(json.dumps(data))
+    contract = impact.review_authorization_contract(path, "source")
+    reasons = ["lease expiration lacks correlated post-expiry output"]
+    if defect == "extra_gap":
+        reasons.append("MAVROS output is not correlated to arbiter execution telemetry")
+    audit_report = {"status": "INCOMPLETE", "incomplete_reasons": sorted(reasons),
+        "checks": {"valid_track_observed": True, "revocation_observed": True,
+            "revocation_output_observed": True, "no_recorded_authorization_violation": True},
+        "violations": []}
+    assert not impact.authorization_evidence_complete(audit_report, contract)
+
+
 def write_actual_evaluation(root, *, samples=100, collisions=0, clearance=1.):
     pytest.importorskip("rclpy")
     from xq_autonomy.sitl_evaluator_node import SITLEvaluator

@@ -482,6 +482,51 @@ def audit_stage_a_authorization(run):
     return report
 
 
+AUTHORIZATION_CONTRACT_CHECKS = {
+    "uncertified_command_blocked", "certified_feedforward_preserved",
+    "wrong_trajectory_blocked", "wrong_frame_blocked", "revoked_trajectory_blocked",
+    "old_session_blocked", "lease_tracked_before_expiry", "expired_lease_never_tracks",
+    "expired_lease_brakes", "loaded_arbiter_matches_build_manifest",
+}
+
+
+def review_authorization_contract(path, expected_source):
+    """Bind separate negative-path behavior evidence to the flight source snapshot."""
+    if not path:
+        return {"status": "NOT_PROVIDED", "verified": False}
+    source = Path(path).resolve()
+    try:
+        contract = read_json(source)
+        checks = contract.get("checks", {})
+        build = contract.get("build", {})
+        verified = (contract.get("status") == "PASS"
+            and build.get("source_sha256") == expected_source
+            and contract.get("physical_stop_verified") is False
+            and all(checks.get(name) is True for name in AUTHORIZATION_CONTRACT_CHECKS))
+        return {"status": "PASS" if verified else "FAIL", "verified": verified,
+            "source_path": str(source), "sha256": digest(source),
+            "expected_source_sha256": expected_source, "contract": contract}
+    except (OSError, ValueError, TypeError, AttributeError) as error:
+        return {"status": "FAIL", "verified": False, "source_path": str(source),
+            "expected_source_sha256": expected_source, "error": str(error)}
+
+
+def authorization_evidence_complete(audit, contract):
+    if audit.get("status") == "PASS":
+        return True
+    only_missing_expiry = (audit.get("status") == "INCOMPLETE"
+        and audit.get("incomplete_reasons") == [
+            "lease expiration lacks correlated post-expiry output"])
+    checks = audit.get("checks", {})
+    observed_flight_contract = (checks.get("valid_track_observed") is True
+        and checks.get("revocation_observed") is True
+        and checks.get("revocation_output_observed") is True
+        and checks.get("no_recorded_authorization_violation") is True
+        and not audit.get("violations"))
+    return bool(only_missing_expiry and observed_flight_contract
+                and contract.get("verified") is True)
+
+
 def audit_stage_a_maps(run):
     """Decode map evidence using the interfaces from the run's bound install."""
     output = run / "stage-a-map-audit.json"
@@ -515,6 +560,9 @@ def stage_a(args):
     mission = report.get("mission", {})
     evaluation = report.get("evaluation", {})
     authorization_report = audit_stage_a_authorization(run)
+    authorization_contract = review_authorization_contract(
+        getattr(args, "authorization_contract", None), report.get("source_sha256"))
+    write_json(run / "stage-a-authorization-contract.json", authorization_contract)
     map_report = audit_stage_a_maps(run)
     events = []
     event_file = run / "events.jsonl"
@@ -536,7 +584,8 @@ def stage_a(args):
         "termination_confirmed": bool(mission.get("termination_confirmed")),
         "rosbag_metadata_present": (run / "rosbag" / "metadata.yaml").is_file(),
         "dataflash_present": any((run / "sitl_runtime" / "logs").glob("*.BIN")),
-        "authorized_command_execution_verified": authorization_report.get("status") == "PASS",
+        "authorized_command_execution_verified": authorization_evidence_complete(
+            authorization_report, authorization_contract),
         "map_content_verified": (map_report.get("status") == "MAP_CONTENT_VERIFIED"
                                  and map_report.get("map_content_verified") is True),
         "completed_task": bool(report.get("completed_record")),
@@ -565,6 +614,7 @@ def stage_a(args):
         "checks": checks,
         "map_audit": map_report,
         "authorization_audit": authorization_report,
+        "authorization_contract": authorization_contract,
         "event_evidence": {
             "count": len(events),
             "certify": sum(event.get("event") == "CERTIFY" for event in events),
@@ -627,6 +677,8 @@ def main():
             s.add_argument("--scenario", choices=config()["scenarios"], default="normal")
             s.add_argument("--strategy", choices=config()["strategies"], default="recovery")
             s.add_argument("--seed", type=int, default=1000)
+        if name == "stage-a":
+            s.add_argument("--authorization-contract")
         if name == "smoke": s.set_defaults(smoke=True)
         elif name == "batch":
             s.add_argument("--jobs", type=int, default=1)
