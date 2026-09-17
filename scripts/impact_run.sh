@@ -142,10 +142,34 @@ wait_log() {
   done
 }
 graph_probe() {
-  topic="$1"; output="$2"
-  if ! timeout 15 ros2 topic info --no-daemon --spin-time 2 "$topic" -v >"$output" 2>&1; then
-    printf 'probe_exit_nonzero=true\n' >>"$output"
-  fi
+  local topic="$1" output="$2" expected="${3:-}" attempt=0 rc=0
+  local deadline=$((SECONDS+20)) attempt_output records
+  records="${output%.txt}-attempts.jsonl"
+  : >"$records"
+  while true; do
+    attempt=$((attempt+1))
+    attempt_output="${output%.txt}-attempt-${attempt}.txt"
+    set +e
+    timeout 10 ros2 topic info --no-daemon --spin-time 3 "$topic" -v \
+      >"$attempt_output" 2>&1
+    rc=$?
+    set -e
+    cp -- "$attempt_output" "$output"
+    python3 - "$records" "$attempt" "$topic" "$rc" "${ROS_DOMAIN_ID:-0}" <<'PY'
+import datetime,json,sys
+path,attempt,topic,status,domain=sys.argv[1:]
+with open(path,"a",encoding="utf-8") as stream:
+    stream.write(json.dumps({"attempt":int(attempt),"collected_at":datetime.datetime.now().astimezone().isoformat(),
+        "command":["ros2","topic","info","--no-daemon","--spin-time","3",topic,"-v"],
+        "exit_code":int(status),"ros_domain_id":domain},separators=(",",":"))+"\n")
+PY
+    if [[ "$rc" == 0 && ( -z "$expected" || "$expected" == "$(grep -Fom1 -- "$expected" "$output" || true)" ) ]]; then
+      break
+    fi
+    ((SECONDS < deadline)) || break
+    sleep 0.5
+  done
+  [[ "$rc" == 0 ]] || printf 'probe_exit_nonzero=true\n' >>"$output"
   printf '%s\n' "$(date -Is)" >"${output%.txt}-collected-at.txt"
 }
 sha256sum "$ARDUPILOT_ROOT/build/sitl/bin/arducopter" \
@@ -216,11 +240,11 @@ phase="audit_runtime_graph"
 # block indefinitely, preventing the bounded probes from ever running.
 printf '%s\n' 'bypassed: graph probes use --no-daemon; no daemon control issued' \
   >"$run/ros-daemon-control.txt"
-graph_probe /xq/eval/p5/ground_truth "$run/truth-graph.txt"
-graph_probe /uav1/mavros/setpoint_raw/local "$run/setpoint-graph.txt"
-graph_probe /xq/p4/extnav/status "$run/extnav-status-graph.txt"
-graph_probe /uav1/mavros/odometry/out "$run/extnav-output-graph.txt"
-graph_probe /uav1/mavros/state "$run/mavros-state-graph.txt"
+graph_probe /xq/eval/p5/ground_truth "$run/truth-graph.txt" "Node name: impact_evaluator"
+graph_probe /uav1/mavros/setpoint_raw/local "$run/setpoint-graph.txt" "Node name: impact_arbiter"
+graph_probe /xq/p4/extnav/status "$run/extnav-status-graph.txt" "Node name: xq_p4_external_nav"
+graph_probe /uav1/mavros/odometry/out "$run/extnav-output-graph.txt" "Node name: odometry"
+graph_probe /uav1/mavros/state "$run/mavros-state-graph.txt" "Node name: sys"
 timeout 15 ros2 node list --no-daemon --spin-time 2 >"$run/ros-nodes-prearm.txt" 2>&1
 printf '%s\n' "$(date -Is)" >"$run/ros-nodes-prearm-collected-at.txt"
 timeout 15 ros2 service list --no-daemon --spin-time 2 -t >"$run/ros-services-prearm.txt" 2>&1

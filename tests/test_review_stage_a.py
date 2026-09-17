@@ -143,6 +143,16 @@ def test_stage_a_publishes_registered_cloud_for_information_map():
     assert 'remappings=[("/xq/p5/cloud_map", "/impact/information_cloud")]' in information_map
 
 
+def test_runtime_graph_probes_retry_required_endpoint_and_record_identity_context():
+    script = (impact.ROOT / "scripts/impact_run.sh").read_text()
+    probe = script.split("graph_probe() {", 1)[1].split("sha256sum", 1)[0]
+    assert "SECONDS+20" in probe
+    assert "--no-daemon" in probe and '"ros_domain_id":domain' in probe
+    assert '"command":["ros2","topic","info"' in probe
+    assert "attempts.jsonl" in probe
+    assert '"Node name: impact_arbiter"' in script
+
+
 @pytest.mark.parametrize("mission_status,evaluation_status,expected", [
     ("PASS", "PASS", "PASS"), ("FAIL", "PASS", "FAIL"), ("PASS", "FAIL", "FAIL"),
 ])

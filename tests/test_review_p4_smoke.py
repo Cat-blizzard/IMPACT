@@ -171,7 +171,8 @@ def test_runtime_graph_audit_uses_bounded_daemon_free_probes():
     commands = [line.strip() for line in runner.splitlines()]
     assert not any(line.startswith("ros2 daemon stop") for line in commands)
     assert not any(line.startswith("ros2 daemon start") for line in commands)
-    assert "timeout 15 ros2 topic info --no-daemon --spin-time 2" in runner
+    assert "timeout 10 ros2 topic info --no-daemon --spin-time 3" in runner
+    assert "SECONDS+20" in runner and "attempts.jsonl" in runner
     assert "timeout 15 ros2 node list --no-daemon --spin-time 2" in runner
 
 
