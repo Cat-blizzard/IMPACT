@@ -20,7 +20,8 @@ def _endpoints(text, kind):
     return result
 
 
-def check_graph(truth, setpoint, require_evaluator=True, recorder_participants=()):
+def check_graph(truth, setpoint, require_evaluator=True, recorder_participants=(),
+                mavros_participants=()):
     # ros2 topic info -v sections name endpoint type and node name.
     endpoints = _endpoints(truth, "SUBSCRIPTION")
     subscribers = [item["node"] for item in endpoints]
@@ -35,10 +36,29 @@ def check_graph(truth, setpoint, require_evaluator=True, recorder_participants=(
                   item["resolved_node"].startswith("rosbag2_recorder") for item in resolved)
     count = re.search(r"Publisher count: (\d+)", setpoint)
     owner = "Node name: impact_arbiter" in setpoint
+    setpoint_subscribers = _endpoints(setpoint, "SUBSCRIPTION")
+    mavros_participants = set(mavros_participants)
+    resolved_setpoint_subscribers = []
+    for item in setpoint_subscribers:
+        node, namespace = item["node"], item["namespace"]
+        resolution = "reported"
+        if node == "_NODE_NAME_UNKNOWN_" and item.get("participant_gid") in mavros_participants:
+            node, namespace = "mavros_process@gid", "/uav1/mavros"
+            resolution = "participant_gid_from_mavros_state"
+        resolved_setpoint_subscribers.append({**item, "resolved_node": node,
+            "resolved_namespace": namespace, "identity_resolution": resolution})
+    mavros_subscription = any(
+        (item["resolved_node"] == "setpoint_raw"
+         and item["resolved_namespace"] == "/uav1/mavros")
+        or (item["resolved_node"] == "mavros_process@gid"
+            and item["resolved_namespace"] == "/uav1/mavros")
+        for item in resolved_setpoint_subscribers)
     expected = "impact_evaluator" in [x["resolved_node"] for x in resolved] if require_evaluator else bool(resolved)
     return dict(truth_subscribers=subscribers, truth_endpoints=resolved,
         truth_isolation=allowed and expected,
-        sole_setpoint_publisher=bool(count and count[1] == "1" and owner))
+        sole_setpoint_publisher=bool(count and count[1] == "1" and owner),
+        setpoint_subscribers=resolved_setpoint_subscribers,
+        mavros_setpoint_subscription=mavros_subscription)
 
 
 def check_extnav(status_text, output_text, mavros_identity_text="",
@@ -126,10 +146,13 @@ def main():
     recorder_participants = {x["participant_gid"] for x in extnav["output_subscribers"]
                              if x["node"].startswith("rosbag2_recorder")}
     data = check_graph((run/"truth-graph.txt").read_text(), (run/"setpoint-graph.txt").read_text(),
-                       require_evaluator=not smoke, recorder_participants=recorder_participants)
+                       require_evaluator=not smoke, recorder_participants=recorder_participants,
+                       mavros_participants=extnav["mavros_identity_participant_gids"])
     data["extnav"] = extnav
     data.update(renderer_maps(int((run/"gazebo.pid").read_text())))
-    data["passed"] = (data["truth_isolation"] and (smoke or data["sole_setpoint_publisher"])
+    data["passed"] = (data["truth_isolation"]
+                      and (smoke or (data["sole_setpoint_publisher"]
+                                     and data["mavros_setpoint_subscription"]))
                       and data["extnav"]["status_single_publisher"]
                       and data["extnav"]["output_single_adapter_publisher"]
                       and data["extnav"]["mavros_output_subscription"])

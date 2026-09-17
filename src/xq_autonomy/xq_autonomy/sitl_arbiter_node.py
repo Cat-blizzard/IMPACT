@@ -8,6 +8,7 @@ from rclpy.node import Node
 from rclpy.clock import Clock, ClockType
 from rclpy.qos import qos_profile_sensor_data
 from geometry_msgs.msg import PoseStamped
+from mavros_msgs.msg import PositionTarget
 from nav_msgs.msg import Odometry
 from quadrotor_msgs.msg import PositionCommand
 from std_msgs.msg import String
@@ -31,7 +32,7 @@ class SITLArbiter(Node):
         self.reset_cleanup_generation = 0
         self.buffer = Buffer()
         self.listener = TransformListener(self.buffer, self)
-        self.pub = self.create_publisher(PoseStamped, "/uav1/mavros/setpoint_position/local", 20)
+        self.pub = self.create_publisher(PositionTarget, "/uav1/mavros/setpoint_raw/local", 20)
         self.status_pub = self.create_publisher(String, "/impact/arbiter_status", 10)
         self.create_subscription(Odometry, "/localization/odom", self.odometry, qos_profile_sensor_data)
         self.create_subscription(PositionCommand, "/impact/position_cmd", self.position_command, 20)
@@ -89,6 +90,15 @@ class SITLArbiter(Node):
         self.transform_yaw = 2 * math.atan2(q.z, q.w)
         return point + 2*np.cross(u, np.cross(u, point)+w*point) + xyz(transform.transform.translation)
 
+    def rotate(self, vector):
+        transform = self.buffer.lookup_transform("map", "xq_lio_map", rclpy.time.Time())
+        q = transform.transform.rotation
+        u, w = np.array((q.x, q.y, q.z)), float(q.w)
+        norm = float(np.dot(u, u) + w*w)
+        if abs(norm-1) > 1e-5 or abs(q.x) > 1e-5 or abs(q.y) > 1e-5:
+            raise ValueError("map transform is not upright ENU")
+        return vector + 2*np.cross(u, np.cross(u, vector)+w*vector)
+
     def tick(self):
         self.event_sequence += 1
         decision_sequence = self.event_sequence
@@ -108,7 +118,8 @@ class SITLArbiter(Node):
         measured = xyz(self.odom.pose.pose.position)
         fresh = (wall-self.odom_wall < 0.5 and 0 <= now-stamp_s(self.odom.header.stamp) <= 0.5)
         phase_fresh = wall-self.stage_wall < 0.5
-        mode, target, yaw = "INACTIVE", None, 0.
+        mode, target, velocity, acceleration, yaw, yaw_rate = (
+            "INACTIVE", None, np.zeros(3), np.zeros(3), 0., 0.)
         lease = self.guard.current
         authorized = bool(lease and lease.accepted
             and lease.issued <= now < lease.expires
@@ -121,8 +132,12 @@ class SITLArbiter(Node):
             if (self.phase == "ACTIVE" and phase_fresh and not self.guard.reset_latched
                 and fresh and cmd and wall-self.auth_wall < 0.5
                 and self.guard.allows(cmd.trajectory_id, stamp_s(cmd.header.stamp), now,
-                    cmd.header.frame_id, np.r_[xyz(cmd.position), cmd.yaw], wall-self.command_wall)):
-                target, yaw, mode = xyz(cmd.position), cmd.yaw, "TRACK"
+                    cmd.header.frame_id,
+                    np.r_[xyz(cmd.position), xyz(cmd.velocity), xyz(cmd.acceleration),
+                          cmd.yaw, cmd.yaw_dot], wall-self.command_wall)):
+                target, velocity, acceleration = (
+                    xyz(cmd.position), xyz(cmd.velocity), xyz(cmd.acceleration))
+                yaw, yaw_rate, mode = cmd.yaw, cmd.yaw_dot, "TRACK"
                 if np.linalg.norm(target-measured) > 0.35:
                     target, mode = None, "BRAKE"
                 else:
@@ -140,14 +155,25 @@ class SITLArbiter(Node):
         if target is not None:
             try:
                 target = self.transform(target)
+                velocity = self.rotate(velocity)
+                acceleration = self.rotate(acceleration)
                 yaw += self.transform_yaw
-                message = PoseStamped()
+                message = PositionTarget()
                 message.header.frame_id = "map"
                 # MAVROS uses wall time, while authorization used original simulation time.
                 message.header.stamp = rclpy.clock.Clock(clock_type=rclpy.clock.ClockType.SYSTEM_TIME).now().to_msg()
-                message.pose.position.x, message.pose.position.y, message.pose.position.z = target.tolist()
-                message.pose.orientation.z = math.sin(yaw/2)
-                message.pose.orientation.w = math.cos(yaw/2)
+                message.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
+                message.type_mask = PositionTarget.IGNORE_YAW_RATE
+                if mode != "TRACK":
+                    message.type_mask |= (PositionTarget.IGNORE_VX | PositionTarget.IGNORE_VY
+                        | PositionTarget.IGNORE_VZ | PositionTarget.IGNORE_AFX
+                        | PositionTarget.IGNORE_AFY | PositionTarget.IGNORE_AFZ)
+                message.position.x, message.position.y, message.position.z = target.tolist()
+                message.velocity.x, message.velocity.y, message.velocity.z = velocity.tolist()
+                (message.acceleration_or_force.x, message.acceleration_or_force.y,
+                 message.acceleration_or_force.z) = acceleration.tolist()
+                message.yaw = float(yaw)
+                message.yaw_rate = float(yaw_rate)
                 self.pub.publish(message)
                 # Bind this decision to the exact final MAVROS publication.
                 # Receipt timing and command provenance are recorded separately
@@ -156,17 +182,23 @@ class SITLArbiter(Node):
                 execution = dict(emitted=True,
                     setpoint_stamp_ns=int(message.header.stamp.sec)*1000000000
                         + int(message.header.stamp.nanosec),
-                    frame_id=message.header.frame_id, position=target.tolist(), yaw=float(yaw),
+                    frame_id=message.header.frame_id, coordinate_frame=int(message.coordinate_frame),
+                    type_mask=int(message.type_mask), position=target.tolist(),
+                    velocity=velocity.tolist(), acceleration=acceleration.tolist(),
+                    yaw=float(yaw), yaw_rate=float(yaw_rate),
                     trajectory_id=int(cmd.trajectory_id) if tracking else None,
                     request_id=lease.request if tracking else None,
                     command_stamp=stamp_s(cmd.header.stamp) if tracking else None,
                     command_position=xyz(cmd.position).tolist() if tracking else None,
+                    command_velocity=xyz(cmd.velocity).tolist() if tracking else None,
+                    command_acceleration=xyz(cmd.acceleration).tolist() if tracking else None,
                     command_yaw=float(cmd.yaw) if tracking else None,
+                    command_yaw_rate=float(cmd.yaw_dot) if tracking else None,
                     authorization_issued=lease.issued if tracking else None,
                     authorization_expires=lease.expires if tracking else None)
             except (TransformException, ValueError):
                 mode = "TF_FAILURE"
-        self.status_pub.publish(String(data=json.dumps(dict(schema_version=2,
+        self.status_pub.publish(String(data=json.dumps(dict(schema_version=3,
             session_id=self.guard.session, sim_time=now, mode=mode,
             decision_sequence=decision_sequence,
             input_age_wall=dict(authorization=wall-self.auth_wall, command=wall-self.command_wall,

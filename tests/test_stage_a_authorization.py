@@ -28,23 +28,34 @@ def source_auth(item):
 def decision(now, source, stamp, *, mode="TRACK", active_lease=None):
     lease = active_lease or source
     position = [.2, 0., 2.] if mode == "TRACK" else [0., 0., 2.]
-    execution = dict(emitted=True, setpoint_stamp_ns=stamp, frame_id="map", position=position, yaw=.1,
+    velocity = [.3, 0., 0.] if mode == "TRACK" else [0., 0., 0.]
+    acceleration = [.1, 0., 0.] if mode == "TRACK" else [0., 0., 0.]
+    type_mask = 2048 if mode == "TRACK" else 2552
+    execution = dict(emitted=True, setpoint_stamp_ns=stamp, frame_id="map",
+        coordinate_frame=1, type_mask=type_mask, position=position,
+        velocity=velocity, acceleration=acceleration, yaw=.1, yaw_rate=0.,
         trajectory_id=lease["trajectory_id"] if mode == "TRACK" else None,
         request_id=lease["request_id"] if mode == "TRACK" else None,
         command_stamp=now if mode == "TRACK" else None,
         command_position=position if mode == "TRACK" else None,
+        command_velocity=velocity if mode == "TRACK" else None,
+        command_acceleration=acceleration if mode == "TRACK" else None,
         command_yaw=.1 if mode == "TRACK" else None,
+        command_yaw_rate=0. if mode == "TRACK" else None,
         authorization_issued=lease["issued"] if mode == "TRACK" else None,
         authorization_expires=lease["expires"] if mode == "TRACK" else None)
-    status = dict(schema_version=2, session_id="case", sim_time=now, phase="ACTIVE",
+    status = dict(schema_version=3, session_id="case", sim_time=now, phase="ACTIVE",
         decision_sequence=round(now*2000)+1,
         input_age_wall=dict(authorization=.01, command=.01, stage=.01, odom=.01),
         phase_fresh=True, fresh_odom=True, reset=False, mode=mode, authorized=mode == "TRACK",
         authorization=source, execution=execution)
-    records = [record(STATUS, status), record(OUTPUT, dict(stamp_ns=stamp, frame_id="map", position=position, yaw=.1))]
+    records = [record(STATUS, status), record(OUTPUT, dict(stamp_ns=stamp, frame_id="map",
+        coordinate_frame=1, type_mask=type_mask, position=position, velocity=velocity,
+        acceleration=acceleration, yaw=.1, yaw_rate=0.))]
     if mode == "TRACK":
         records.append(record(COMMAND, dict(trajectory_id=lease["trajectory_id"], stamp=now,
-            frame_id="xq_lio_map", position=position, yaw=.1)))
+            frame_id="xq_lio_map", position=position, velocity=velocity,
+            acceleration=acceleration, yaw=.1, yaw_rate=0.)))
     return records
 
 
@@ -135,6 +146,17 @@ def test_track_input_values_must_match_position_command(records):
     assert audit_records(records, "case")["status"] == "FAIL"
 
 
+def test_track_feedforward_must_match_position_command(records):
+    next(row["message"] for row in records if row["topic"] == COMMAND)["velocity"] = [8., 0., 0.]
+    assert audit_records(records, "case")["status"] == "FAIL"
+
+
+def test_track_output_mask_cannot_drop_feedforward(records):
+    output = next(row["message"] for row in records if row["topic"] == OUTPUT)
+    output["type_mask"] = 2552
+    assert audit_records(records, "case")["status"] == "FAIL"
+
+
 def test_latest_unrelated_rejection_does_not_erase_active_lease_evidence(records):
     unrelated = receipt(99, 10.15, 10.15, accepted=False)
     records += [source_auth(unrelated)]
@@ -193,15 +215,24 @@ def write_ros_bag(root, records):
                 message.header.stamp = ros_stamp(data["stamp"])
                 message.header.frame_id = data["frame_id"]
                 message.position.x, message.position.y, message.position.z = data["position"]
+                message.velocity.x, message.velocity.y, message.velocity.z = data["velocity"]
+                (message.acceleration.x, message.acceleration.y,
+                 message.acceleration.z) = data["acceleration"]
                 message.yaw = data["yaw"]
+                message.yaw_dot = data["yaw_rate"]
             elif topic == SPLINE:
                 message.traj_id = data["trajectory_id"]
-            else:
+            elif topic == OUTPUT:
                 message.header.stamp.sec, message.header.stamp.nanosec = divmod(data["stamp_ns"], 1000000000)
                 message.header.frame_id = data["frame_id"]
-                message.pose.position.x, message.pose.position.y, message.pose.position.z = data["position"]
-                message.pose.orientation.z = math.sin(data["yaw"] / 2)
-                message.pose.orientation.w = math.cos(data["yaw"] / 2)
+                message.coordinate_frame = data["coordinate_frame"]
+                message.type_mask = data["type_mask"]
+                message.position.x, message.position.y, message.position.z = data["position"]
+                message.velocity.x, message.velocity.y, message.velocity.z = data["velocity"]
+                (message.acceleration_or_force.x, message.acceleration_or_force.y,
+                 message.acceleration_or_force.z) = data["acceleration"]
+                message.yaw = data["yaw"]
+                message.yaw_rate = data["yaw_rate"]
             db.execute("INSERT INTO messages VALUES (?, ?, ?, ?)",
                        (index, list(TYPES).index(topic) + 1, 1000-index, serialize_message(message)))
     (bag / "metadata.yaml").write_text(yaml.safe_dump({"rosbag2_bagfile_information": {

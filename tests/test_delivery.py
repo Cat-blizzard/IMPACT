@@ -46,9 +46,12 @@ def test_statistics_keep_failures_and_retries(tmp_path):
 
 def test_graph_audit_checks_endpoint_owners():
     truth="Publisher count: 1\n\nNode name: impact_evaluator\nEndpoint type: SUBSCRIPTION\n"
-    setpoint="Publisher count: 1\nNode name: impact_arbiter\nEndpoint type: PUBLISHER\n"
+    setpoint=("Publisher count: 1\nNode name: impact_arbiter\nEndpoint type: PUBLISHER\n"
+              "Subscription count: 1\nNode name: setpoint_raw\n"
+              "Node namespace: /uav1/mavros\nEndpoint type: SUBSCRIPTION\n")
     result=check_graph(truth,setpoint)
-    assert result["truth_isolation"] and result["sole_setpoint_publisher"]
+    assert (result["truth_isolation"] and result["sole_setpoint_publisher"]
+            and result["mavros_setpoint_subscription"])
     assert not check_graph(truth+"\nNode name: impact_supervisor\nEndpoint type: SUBSCRIPTION\n",setpoint)["truth_isolation"]
     assert not check_graph(truth,setpoint.replace("count: 1","count: 2"))["sole_setpoint_publisher"]
     recorder = "Publisher count: 1\n\nNode name: rosbag2_recorder\nEndpoint type: SUBSCRIPTION\n"

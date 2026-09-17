@@ -16,10 +16,10 @@ import sqlite3
 AUTH = "/impact/authorization"
 STATUS = "/impact/arbiter_status"
 COMMAND = "/impact/position_cmd"
-OUTPUT = "/uav1/mavros/setpoint_position/local"
+OUTPUT = "/uav1/mavros/setpoint_raw/local"
 SPLINE = "/impact/certified_bspline"
 TYPES = {AUTH: "xq_sim_interfaces/msg/TrajectoryAuthorization", STATUS: "std_msgs/msg/String",
-         COMMAND: "quadrotor_msgs/msg/PositionCommand", OUTPUT: "geometry_msgs/msg/PoseStamped",
+         COMMAND: "quadrotor_msgs/msg/PositionCommand", OUTPUT: "mavros_msgs/msg/PositionTarget",
          SPLINE: "traj_utils/msg/Bspline"}
 EPS = 1e-8
 
@@ -56,8 +56,34 @@ def same_values(execution, output):
             and abs(math.remainder(execution["yaw"]-output["yaw"], 2*math.pi)) <= 1e-6)
 
 
-def same_pose(execution, output):
-    return execution.get("frame_id") == output.get("frame_id") == "map" and same_values(execution, output)
+def same_vector(first, second, name):
+    left, right = first.get(name), second.get(name)
+    return (isinstance(left, list) and len(left) == 3
+            and isinstance(right, list) and len(right) == 3
+            and all(finite(value) for value in left + right)
+            and all(abs(x-y) <= 1e-6 for x, y in zip(left, right)))
+
+
+def same_target(execution, output):
+    return (execution.get("frame_id") == output.get("frame_id") == "map"
+            and execution.get("coordinate_frame") == output.get("coordinate_frame") == 1
+            and execution.get("type_mask") == output.get("type_mask")
+            and same_values(execution, output)
+            and same_vector(execution, output, "velocity")
+            and same_vector(execution, output, "acceleration")
+            and finite(execution.get("yaw_rate")) and finite(output.get("yaw_rate"))
+            and abs(execution["yaw_rate"]-output["yaw_rate"]) <= 1e-6)
+
+
+def same_command(execution, command):
+    return (same_values(dict(position=execution.get("command_position"),
+                             yaw=execution.get("command_yaw")), command)
+            and same_vector(dict(velocity=execution.get("command_velocity")), command, "velocity")
+            and same_vector(dict(acceleration=execution.get("command_acceleration")),
+                            command, "acceleration")
+            and finite(execution.get("command_yaw_rate"))
+            and finite(command.get("yaw_rate"))
+            and abs(execution["command_yaw_rate"]-command["yaw_rate"]) <= 1e-6)
 
 
 def audit_records(records, session_id, *, read_errors=()):
@@ -94,8 +120,8 @@ def audit_records(records, session_id, *, read_errors=()):
     receipts = {}
     decision_sequences = set()
     for status in grouped[STATUS]:
-        if not isinstance(status, dict) or status.get("schema_version") != 2:
-            missing.append("arbiter schema_version=2 telemetry is missing")
+        if not isinstance(status, dict) or status.get("schema_version") != 3:
+            missing.append("arbiter schema_version=3 telemetry is missing")
             continue
         if status.get("session_id") != session_id:
             violations.append("arbiter session mismatch")
@@ -162,7 +188,7 @@ def audit_records(records, session_id, *, read_errors=()):
             elif len(candidates) != 1:
                 missing.append("final setpoint timestamp is ambiguous or duplicated")
             else:
-                matches = [item for item in candidates if same_pose(execution, item)]
+                matches = [item for item in candidates if same_target(execution, item)]
                 if not matches:
                     violations.append("arbiter target differs from recorded MAVROS output")
                 elif id(matches[0]) in used_output_ids:
@@ -197,15 +223,17 @@ def audit_records(records, session_id, *, read_errors=()):
             missing.append("TRACK has no matching accepted source authorization")
         if not issued <= now < expires:
             violations.append("TRACK outside its authorization interval")
+        if (execution.get("coordinate_frame") != 1
+                or execution.get("type_mask") != 2048):
+            violations.append("TRACK MAVROS target does not enable position/velocity/acceleration/yaw")
         command_stamp = execution.get("command_stamp")
         if not finite(command_stamp) or not -EPS <= now-command_stamp <= 0.5+EPS:
             violations.append("TRACK uses a stale or future input command")
         inputs = commands.get((trajectory, command_stamp), []) if finite(command_stamp) else []
         if not inputs:
             missing.append("TRACK input command is not present in the bag")
-        elif not any(m.get("frame_id") == "xq_lio_map"
-                     and same_values(dict(position=execution.get("command_position"),
-                                          yaw=execution.get("command_yaw")), m) for m in inputs):
+        elif not any(m.get("frame_id") == "xq_lio_map" and same_command(execution, m)
+                     for m in inputs):
             violations.append("TRACK command values differ from recorded PositionCommand")
         if trajectory not in certified_ids:
             missing.append("TRACK trajectory has no recorded certified B-spline")
@@ -302,15 +330,24 @@ def normalize(topic, message):
                     frame_id=message.header.frame_id)
     if topic == COMMAND:
         point = message.position
+        velocity = message.velocity
+        acceleration = message.acceleration
         return dict(trajectory_id=message.trajectory_id, stamp=stamp_seconds(message.header.stamp),
-                    frame_id=message.header.frame_id, position=[point.x, point.y, point.z], yaw=message.yaw)
+                    frame_id=message.header.frame_id, position=[point.x, point.y, point.z],
+                    velocity=[velocity.x, velocity.y, velocity.z],
+                    acceleration=[acceleration.x, acceleration.y, acceleration.z],
+                    yaw=message.yaw, yaw_rate=message.yaw_dot)
     if topic == SPLINE:
         return dict(trajectory_id=message.traj_id)
-    q = message.pose.orientation
-    yaw = math.atan2(2*(q.w*q.z+q.x*q.y), 1-2*(q.y*q.y+q.z*q.z))
-    point = message.pose.position
+    point = message.position
+    velocity = message.velocity
+    acceleration = message.acceleration_or_force
     return dict(stamp_ns=message.header.stamp.sec*1000000000+message.header.stamp.nanosec,
-                frame_id=message.header.frame_id, position=[point.x, point.y, point.z], yaw=yaw)
+                frame_id=message.header.frame_id, coordinate_frame=message.coordinate_frame,
+                type_mask=message.type_mask, position=[point.x, point.y, point.z],
+                velocity=[velocity.x, velocity.y, velocity.z],
+                acceleration=[acceleration.x, acceleration.y, acceleration.z],
+                yaw=message.yaw, yaw_rate=message.yaw_rate)
 
 
 def read_bag(run_dir):

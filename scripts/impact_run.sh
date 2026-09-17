@@ -201,7 +201,8 @@ start rosbag ros2 bag record -o "$run/rosbag" \
  /uav1/mavros/odometry/out /uav1/mavros/statustext/recv /uav1/mavros/sys_status \
  /uav1/mavros/estimator_status \
  /uav1/mavros/imu/data \
- /uav1/mavros/setpoint_position/local /xq/eval/p5/ground_truth /xq/p4/extnav/status
+ /uav1/mavros/setpoint_position/local /uav1/mavros/setpoint_raw/local \
+ /xq/eval/p5/ground_truth /xq/p4/extnav/status
 start stack ros2 launch xq_sim_bringup impact_sitl.launch.py run_dir:="$run"
 phase="wait_localization"
 python3 "$root/scripts/wait_for_odometry.py" --topic /localization/odom --timeout 120 \
@@ -216,7 +217,7 @@ phase="audit_runtime_graph"
 printf '%s\n' 'bypassed: graph probes use --no-daemon; no daemon control issued' \
   >"$run/ros-daemon-control.txt"
 graph_probe /xq/eval/p5/ground_truth "$run/truth-graph.txt"
-graph_probe /uav1/mavros/setpoint_position/local "$run/setpoint-graph.txt"
+graph_probe /uav1/mavros/setpoint_raw/local "$run/setpoint-graph.txt"
 graph_probe /xq/p4/extnav/status "$run/extnav-status-graph.txt"
 graph_probe /uav1/mavros/odometry/out "$run/extnav-output-graph.txt"
 graph_probe /uav1/mavros/state "$run/mavros-state-graph.txt"

@@ -104,6 +104,7 @@ def arbiter(monkeypatch):
     node.pub = SimpleNamespace(publish=publications.append)
     node.status_pub = SimpleNamespace(publish=statuses.append)
     node.transform = lambda value: value
+    node.rotate = lambda value: value
     node.transform_yaw = 0.
     node.phase = "ACTIVE"
     node.stage_wall = time.monotonic()
@@ -162,7 +163,7 @@ def test_clock_reset_discards_old_brake_regardless_of_callback_order(arbiter, fi
     node.odometry(odometry_at(0., 1.))
     node.tick()
     assert len(publications) == 1
-    position = publications[-1].pose.position
+    position = publications[-1].position
     assert (position.x, position.y, position.z) == pytest.approx((0., 0., 2.))
     status = json.loads(statuses[-1].data)
     assert status["reset"] and not status["authorized"]
@@ -179,7 +180,7 @@ def test_clock_reset_discards_old_brake_regardless_of_callback_order(arbiter, fi
     assert not publications and node.brake_state is None and node.odom is None
     node.odometry(odometry_at(-5., .5))
     node.tick()
-    assert publications[-1].pose.position.x == pytest.approx(-5.)
+    assert publications[-1].position.x == pytest.approx(-5.)
 
 
 def tracking_inputs(node, now, *, expires=10.3):
@@ -192,6 +193,9 @@ def tracking_inputs(node, now, *, expires=10.3):
     command.header.stamp = ros_stamp(now[0])
     command.trajectory_id = 7
     command.position.x, command.position.z, command.yaw = .2, 2., .1
+    command.velocity.x = .3
+    command.acceleration.x = .1
+    command.yaw_dot = .05
     node.position_command(command)
     auth = TrajectoryAuthorization()
     auth.header.frame_id = "xq_lio_map"
@@ -209,15 +213,25 @@ def test_execution_telemetry_links_exact_final_setpoint_and_received_authorizati
     command, auth = tracking_inputs(node, now)
     node.tick()
     status = json.loads(statuses[-1].data)
-    assert status["schema_version"] == 2
+    assert status["schema_version"] == 3
     assert status["mode"] == "TRACK" and status["authorized"]
     execution = status["execution"]
     final = publications[-1]
     assert execution["emitted"] and execution["frame_id"] == final.header.frame_id == "map"
     assert execution["setpoint_stamp_ns"] == final.header.stamp.sec * 10**9 + final.header.stamp.nanosec
-    assert execution["position"] == pytest.approx([final.pose.position.x, final.pose.position.y, final.pose.position.z])
+    assert execution["position"] == pytest.approx(
+        [final.position.x, final.position.y, final.position.z])
+    assert execution["velocity"] == pytest.approx(
+        [final.velocity.x, final.velocity.y, final.velocity.z])
+    assert execution["acceleration"] == pytest.approx(
+        [final.acceleration_or_force.x, final.acceleration_or_force.y,
+         final.acceleration_or_force.z])
+    assert final.type_mask == final.IGNORE_YAW_RATE
     assert execution["command_position"] == pytest.approx([.2, 0., 2.])
+    assert execution["command_velocity"] == pytest.approx([.3, 0., 0.])
+    assert execution["command_acceleration"] == pytest.approx([.1, 0., 0.])
     assert execution["command_yaw"] == pytest.approx(command.yaw)
+    assert execution["command_yaw_rate"] == pytest.approx(command.yaw_dot)
     assert execution["trajectory_id"] == command.trajectory_id
     assert execution["request_id"] == auth.request_id
     assert execution["command_stamp"] == 10.
@@ -239,7 +253,8 @@ def test_expired_authorization_reports_false_and_brakes_old_command(arbiter):
     assert status["mode"] == "BRAKE" and status["authorized"] is False
     assert status["execution"]["emitted"]
     assert status["execution"]["trajectory_id"] is None
-    assert publications[-1].pose.position.x == pytest.approx(0.)
+    assert publications[-1].position.x == pytest.approx(0.)
+    assert publications[-1].type_mask == 2552
 
 
 def test_revocation_receipt_is_recorded_and_cannot_execute_old_target(arbiter):
@@ -258,7 +273,7 @@ def test_revocation_receipt_is_recorded_and_cannot_execute_old_target(arbiter):
     assert status["authorization"]["accepted"] is False
     assert status["authorization"]["received_sim_time"] == pytest.approx(10.1)
     assert status["execution"]["request_id"] is None
-    assert publications[-1].pose.position.x == pytest.approx(0.)
+    assert publications[-1].position.x == pytest.approx(0.)
 
 
 @pytest.mark.parametrize("stale_input", ["odom", "stage", "auth"])
