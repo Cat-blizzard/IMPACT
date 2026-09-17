@@ -75,8 +75,9 @@
   "regression": {
     "tests": "372 passed plus ROS authorization contract PASS",
     "full_build": "14 packages passed",
+    "post_validation_code_git_commit": "8d376c64568b39d461caf50872a10f05cd37d16d",
     "post_validation_code_source_sha256": "a1563bdfa049b04afee413a04b979d5013fa09853f9bb83eaa84ee6351f218ae",
-    "post_validation_build_manifest_sha256": "fc04beaabb64b44c491148d229acc884185e001ad8df0f8f8827711c884c32ee",
+    "post_validation_build_manifest_sha256": "cd49d9c08e6d091958b1d936a7d4449e638e5b9677c33c9523c97007f532db14",
     "installed_supervisor_sha256": "8c92221acf394fbec6eee008ef9517a2cef09e3fb478dca9af42f5151f523a6a"
   },
   "limitations": [
@@ -84,6 +85,7 @@
     "The recovery mechanism and recovery benefit are not demonstrated.",
     "Stage B expansion and the formal 120-run matrix remain blocked.",
     "Old P5 FAIL, 1.2 m UNVERIFIED_FLIGHT, GPU P4 failure evidence and ExternalNav/EKF historical risk remain open.",
-    "Large raw bags and DataFlash files remain on the server and are indexed by path and SHA-256."
+    "Large raw bags and DataFlash files remain on the server and are indexed by path and SHA-256.",
+    "The final report-only commit is later than the built code commit and does not change src, scripts or config."
   ]
 }
