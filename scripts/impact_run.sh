@@ -27,6 +27,9 @@ trap 'failure_trap "$LINENO" "$BASH_COMMAND"' ERR
 cleanup() {
   status=$?
   set +e
+  # Child launchers conventionally return their signal status during normal
+  # cleanup.  They are cleanup outcomes, not a new first failure.
+  trap - ERR
   date -Is >"$run/cleanup-started-at.txt"
   printf 'exit_code=%s phase=%s\n' "$status" "$phase" >>"$run/cleanup-started-at.txt"
   for pid in "${pids[@]}"; do printf 'pid=%s alive=%s\n' "$pid" "$(kill -0 "$pid" 2>/dev/null && echo true || echo false)" >>"$run/cleanup-started-at.txt"; done

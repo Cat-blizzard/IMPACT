@@ -175,6 +175,13 @@ def test_runtime_graph_audit_uses_bounded_daemon_free_probes():
     assert "timeout 15 ros2 node list --no-daemon --spin-time 2" in runner
 
 
+def test_cleanup_disables_error_trap_before_reaping_signalled_children():
+    runner = (Path(__file__).resolve().parents[1] / "scripts" / "impact_run.sh").read_text()
+    cleanup = runner.split("cleanup() {", 1)[1].split("trap cleanup EXIT", 1)[0]
+    assert "trap - ERR" in cleanup
+    assert cleanup.index("trap - ERR") < cleanup.index("wait \"$pid\"")
+
+
 @pytest.mark.parametrize("topic", ["odom", "extnav", "extnav_output", "fcu", "sys_status"])
 @pytest.mark.parametrize("boundary", ["start", "end"])
 def test_smoke_rejects_missing_window_boundary(topic, boundary):
