@@ -207,8 +207,11 @@ phase="wait_integrity"
 python3 "$root/scripts/wait_for_integrity.py" --topic /integrity/directional --timeout 30 \
   --output "$run/first-integrity.json" --diagnostics "$run/first-integrity-diagnostics.json"
 phase="audit_runtime_graph"
-ros2 daemon stop >"$run/ros-daemon-stop.txt" 2>&1 || true
-timeout 10 ros2 daemon start >"$run/ros-daemon-start.txt" 2>&1
+# Every graph probe below explicitly bypasses the ROS daemon.  Controlling the
+# daemon here is both unnecessary and unsafe: `ros2 daemon stop` can itself
+# block indefinitely, preventing the bounded probes from ever running.
+printf '%s\n' 'bypassed: graph probes use --no-daemon; no daemon control issued' \
+  >"$run/ros-daemon-control.txt"
 graph_probe /xq/eval/p5/ground_truth "$run/truth-graph.txt"
 graph_probe /uav1/mavros/setpoint_position/local "$run/setpoint-graph.txt"
 graph_probe /xq/p4/extnav/status "$run/extnav-status-graph.txt"

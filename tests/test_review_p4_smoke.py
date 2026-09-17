@@ -166,6 +166,15 @@ def test_complete_healthy_smoke_window_passes():
     assert report["passed"]
 
 
+def test_runtime_graph_audit_uses_bounded_daemon_free_probes():
+    runner = (Path(__file__).resolve().parents[1] / "scripts" / "impact_run.sh").read_text()
+    commands = [line.strip() for line in runner.splitlines()]
+    assert not any(line.startswith("ros2 daemon stop") for line in commands)
+    assert not any(line.startswith("ros2 daemon start") for line in commands)
+    assert "timeout 15 ros2 topic info --no-daemon --spin-time 2" in runner
+    assert "timeout 15 ros2 node list --no-daemon --spin-time 2" in runner
+
+
 @pytest.mark.parametrize("topic", ["odom", "extnav", "extnav_output", "fcu", "sys_status"])
 @pytest.mark.parametrize("boundary", ["start", "end"])
 def test_smoke_rejects_missing_window_boundary(topic, boundary):
