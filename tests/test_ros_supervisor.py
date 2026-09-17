@@ -100,6 +100,24 @@ def test_observation_resumes_planning_but_needs_online_certification(node):
     rows=[json.loads(line) for line in impact.Path(node.events.name).read_text().splitlines()]
     event=next(r for r in rows if r["event"] == "RECOVERY_CONFIRMED")
     assert event["delta_margin"] == pytest.approx(event["delta_AL"]-event["delta_PL"])
+    assert not node.cycle.remaining
+
+
+def test_unconfirmed_observation_continues_remaining_recovery_intents(node):
+    remaining = [("backtrack", np.array([-.5, 0., 2.]), 1.0)]
+    node.cycle.remaining = list(remaining)
+    node.recovery_before = dict(AL=1., PL=2., margin=-1.)
+    node.recovery_observed = True
+    node.cycle.issue("mission")
+    node.integrity.integrity_covariance = (np.eye(3) * 1e6).flatten().tolist()
+    node.candidate(candidate(node))
+    node.tick()
+    assert node.active is None
+    assert node.cycle.remaining == remaining
+    assert not node.recovery_observed
+    rows = [json.loads(line) for line in impact.Path(node.events.name).read_text().splitlines()]
+    event = next(row for row in rows if row["event"] == "RECOVERY_NOT_CONFIRMED")
+    assert event["remaining_intents"] == ["backtrack"]
 
 
 def test_clock_reset_invalidates_pending_and_active(node):

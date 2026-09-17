@@ -322,15 +322,22 @@ class SITLSupervisor(Node):
                     self.event("RECOVERY_CONFIRMED", before=before, after=after,
                                delta_AL=da, delta_PL=dp, delta_margin=da-dp,
                                comparison="Each final spline uses its own critical point/direction")
+                    self.cycle.remaining.clear()
                     self.recovery_observed = False
             elif not self.active:
                 self.cycle.result(candidate.request_id, False)
                 if self.strategy == "recovery" and self.cycle.intent == "mission" and now-self.last_recovery_sim > 2:
-                    self.cycle.remaining = self.recovery_intents(candidate)
-                    self.recovery_origin = xyz(self.odom.pose.pose.position)
-                    self.recovery_before = dict(self.last_metrics)
-                    self.recovery_observed = False
-                    self.last_recovery_sim = now
+                    resume_remaining = self.recovery_observed and bool(self.cycle.remaining)
+                    if self.recovery_observed:
+                        self.event("RECOVERY_NOT_CONFIRMED", before=self.recovery_before,
+                                   after=dict(self.last_metrics),
+                                   remaining_intents=[item[0] for item in self.cycle.remaining])
+                        self.recovery_observed = False
+                    if not resume_remaining:
+                        self.cycle.remaining = self.recovery_intents(candidate)
+                        self.recovery_origin = xyz(self.odom.pose.pose.position)
+                        self.recovery_before = dict(self.last_metrics)
+                        self.last_recovery_sim = now
         position = xyz(self.odom.pose.pose.position)
         speed = float(np.linalg.norm(xyz(self.odom.twist.twist.linear)))
         if np.linalg.norm(position - self.goal) < 0.45 and speed < 0.15:
@@ -344,7 +351,6 @@ class SITLSupervisor(Node):
         elif self.cycle.phase == "OBSERVING" and now >= self.observing_until and self.cycle.observed(stamp_s(self.integrity.header.stamp)):
             self.event("NEW_OBSERVATION", before=self.recovery_before,
                        observed_PL=float(self.integrity.weak_direction_protection_level))
-            self.cycle.remaining.clear()
             self.recovery_observed = True
             self.request(self.goal)
         elif not self.completed and not self.active and self.cycle.phase != "OBSERVING" and now-self.last_plan_sim > 1:
