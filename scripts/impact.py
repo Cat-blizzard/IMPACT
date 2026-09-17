@@ -174,6 +174,11 @@ def slot_lock():
         # Check every P5 fixed endpoint before spawning; never kill existing owners.
         for port, kind in ((5760, socket.SOCK_STREAM), (9002, socket.SOCK_DGRAM)):
             with socket.socket(socket.AF_INET, kind) as s:
+                # A completed SITL TCP session can leave 5760 in TIME_WAIT.
+                # Reuse permits that recoverable state while a live listener
+                # still makes this probe fail. UDP remains strictly exclusive.
+                if kind == socket.SOCK_STREAM:
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 try: s.bind(("127.0.0.1", port))
                 except OSError: raise RuntimeError(f"required port {port} is already in use")
         yield
