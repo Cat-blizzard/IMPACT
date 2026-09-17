@@ -175,9 +175,28 @@ def analyze_samples(samples, start, finished, window_s, service_events=()):
 
 
 def main():
-    ap=argparse.ArgumentParser(); ap.add_argument('--seconds',type=float,default=30); ap.add_argument('--output',required=True); a=ap.parse_args()
+    ap=argparse.ArgumentParser(); ap.add_argument('--seconds',type=float,default=30); ap.add_argument('--ready-timeout',type=float,default=15); ap.add_argument('--output',required=True); a=ap.parse_args()
     rclpy.init(); n=Monitor(); service_events=[]
     stream=n.request_streams()
+    # Discovery is a separate, bounded phase.  Starting the continuity window
+    # before subscriptions have matched turns a normal DDS discovery delay into
+    # an apparent data gap.  Do not weaken the gap thresholds: instead require
+    # one sample from every critical stream, then begin a fresh 30 s window.
+    required=('odom', 'extnav', 'extnav_output', 'fcu', 'sys_status')
+    ready_started=time.monotonic(); ready_deadline=ready_started+a.ready_timeout
+    while time.monotonic() < ready_deadline and rclpy.ok() and not all(n.samples[key] for key in required):
+        rclpy.spin_once(n, timeout_sec=0.2)
+    readiness={'timeout_s':a.ready_timeout, 'wait_s':time.monotonic()-ready_started,
+               'required_topics':list(required),
+               'initial_counts':{key:len(n.samples[key]) for key in required},
+               'ready':all(n.samples[key] for key in required)}
+    if not readiness['ready']:
+        result={'schema_version':2, 'window_s':a.seconds, 'readiness':readiness,
+                'criteria':{'initial_streams_ready':False}, 'passed':False,
+                'service_events':[service_event('stream_request', stream)]}
+        open(a.output,'w').write(json.dumps(result,indent=2)+'\n'); n.destroy_node(); rclpy.shutdown()
+        return 1
+    n.samples={key:[] for key in n.samples}
     start=time.monotonic(); end=start+a.seconds; next_prearm=start
     pending=[]
     while time.monotonic()<end and rclpy.ok():
@@ -192,6 +211,9 @@ def main():
     for elapsed,future in pending:
         service_events.append(service_event('prearm_check', future, elapsed_s=elapsed))
     result = analyze_samples(n.samples, start, finished, a.seconds, service_events)
+    result['readiness']=readiness
+    result['criteria']['initial_streams_ready']=True
+    result['passed'] = all(result['criteria'].values())
     open(a.output,'w').write(json.dumps(result,indent=2)+'\n'); n.destroy_node(); rclpy.shutdown()
     return 0 if result['passed'] else 1
 if __name__=='__main__': raise SystemExit(main())

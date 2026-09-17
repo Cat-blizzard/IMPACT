@@ -175,6 +175,14 @@ def test_runtime_graph_audit_uses_bounded_daemon_free_probes():
     assert "timeout 15 ros2 node list --no-daemon --spin-time 2" in runner
 
 
+def test_smoke_monitor_has_bounded_discovery_before_strict_window():
+    monitor = (Path(__file__).resolve().parents[1] / "scripts" / "startup_smoke_monitor.py").read_text()
+    assert "--ready-timeout" in monitor
+    assert "while time.monotonic() < ready_deadline" in monitor
+    assert "n.samples={key:[] for key in n.samples}" in monitor
+    assert "initial_streams_ready" in monitor
+
+
 def test_cleanup_disables_error_trap_before_reaping_signalled_children():
     runner = (Path(__file__).resolve().parents[1] / "scripts" / "impact_run.sh").read_text()
     cleanup = runner.split("cleanup() {", 1)[1].split("trap cleanup EXIT", 1)[0]
