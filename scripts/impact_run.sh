@@ -11,7 +11,7 @@ set -u
 python3 "$root/scripts/verify_runtime_build.py" --install "$IMPACT_INSTALL" \
   --manifest "${IMPACT_BUILD_MANIFEST:-$IMPACT_INSTALL/../build-manifest.json}" \
   --output "$run/runtime-build-verification.json"
-export GZ_SIM_RESOURCE_PATH="$IMPACT_INSTALL/xq_gz_assets/share/xq_gz_assets/models:$ARDUPILOT_GAZEBO_ROOT/models:$ARDUPILOT_GAZEBO_ROOT/worlds"
+export GZ_SIM_RESOURCE_PATH="$run/models:$IMPACT_INSTALL/xq_gz_assets/share/xq_gz_assets/models:$ARDUPILOT_GAZEBO_ROOT/models:$ARDUPILOT_GAZEBO_ROOT/worlds"
 export GZ_SIM_SYSTEM_PLUGIN_PATH="$ARDUPILOT_GAZEBO_ROOT/build"
 export SDF_PATH="$GZ_SIM_RESOURCE_PATH"
 mkdir -p -- "$run/ros_logs" "$run/sitl_runtime"
@@ -19,8 +19,20 @@ pids=()
 labels=()
 phase="init"
 failure_trap() {
-  rc=$?
-  printf '{"phase":"%s","line":%s,"command":"%s","exit_code":%s}\n' "$phase" "$1" "$2" "$rc" >"$run/first-failure.json"
+  local rc=$?
+  if [[ ! -e "$run/first-failure.json" ]]; then
+    python3 - "$run/first-failure.json" "$phase" "$1" "$2" "$rc" <<'PY' || true
+import json, sys
+path, phase, line, command, code = sys.argv[1:]
+try:
+    with open(path, 'x', encoding='utf-8') as output:
+        json.dump({'phase': phase, 'line': int(line), 'command': command,
+                   'exit_code': int(code)}, output)
+        output.write('\n')
+except FileExistsError:
+    pass
+PY
+  fi
   return "$rc"
 }
 trap 'failure_trap "$LINENO" "$BASH_COMMAND"' ERR
@@ -30,7 +42,7 @@ cleanup() {
   date -Is >"$run/cleanup-started-at.txt"
   printf 'exit_code=%s phase=%s\n' "$status" "$phase" >>"$run/cleanup-started-at.txt"
   for pid in "${pids[@]}"; do printf 'pid=%s alive=%s\n' "$pid" "$(kill -0 "$pid" 2>/dev/null && echo true || echo false)" >>"$run/cleanup-started-at.txt"; done
-  trap - EXIT INT TERM
+  trap - EXIT INT TERM ERR
   : >"$run/cleanup-processes.jsonl"
   cleanup_initial=()
   cleanup_signals=()
@@ -166,6 +178,8 @@ phase="start_mavros"
 start mavros ros2 launch mavros apm.launch fcu_url:=tcp://127.0.0.1:5760 namespace:=uav1/mavros
 phase="start_gazebo"
 gz_args=(-r -s -v 4 --record-path "$run/gz_record" --record-period 0.05)
+gazebo_seed="$(python3 -c 'import json,sys;print(int(json.load(open(sys.argv[1]))["seed"]))' "$run/run.json")"
+gz_args+=(--seed "$gazebo_seed")
 [[ "$profile" == local_cpu ]] && gz_args+=(--headless-rendering)
 start gazebo gz sim "${gz_args[@]}" "$run/world.sdf"
 wait_log sitl "JSON received" 90
@@ -173,7 +187,7 @@ wait_log mavros "Got HEARTBEAT" 60
 phase="start_rosbag"
 start rosbag ros2 bag record -o "$run/rosbag" \
  /clock /tf /tf_static /livox/lidar /livox/imu /localization/odom /localization/geometry \
- /xq/p5/cloud_map /xq/p5/navigation_map /xq/p5/exploration/status \
+ /cloud_registered /impact/legacy_frontier_cloud /xq/p5/navigation_map /xq/p5/exploration/status \
  /impact/information_cloud /grid_map/occupancy_inflate \
  /integrity/directional /integrity/information_map \
  /impact/planner_goal /impact/planner_candidate /impact/certified_bspline \

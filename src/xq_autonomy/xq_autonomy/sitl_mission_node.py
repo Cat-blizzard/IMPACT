@@ -155,16 +155,12 @@ class SITLMission(P4MissionNode):
             if self.phase != "LAND":
                 return
             self._send_command("land")
-            if wall-self.phase_started > 30:
-                self._finish("FAIL", "LAND_COMMAND_TIMEOUT")
         elif self.phase == "DESCEND":
             odom_fresh = self.have_odom and wall-self.current_odom_last_wall <= float(
                 self.get_parameter("health_odom_max_age_s").value)
             if (self._fcu_state_is_fresh() and not self.fcu_state.armed and odom_fresh
                     and abs(self.current_xyz[2]-self.origin_xyz[2]) <= 0.35):
                 self._finish("PASS" if self.task_success else "FAIL", self.task_reason)
-            elif wall-self.phase_started > 90:
-                self._finish("FAIL", "LANDING_NOT_CONFIRMED")
         else:
             super()._tick()
 

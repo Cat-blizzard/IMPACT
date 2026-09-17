@@ -2,6 +2,7 @@
 from pathlib import Path
 import json
 import random
+import shutil
 import xml.etree.ElementTree as ET
 
 
@@ -23,12 +24,27 @@ def scenario_geometry(name, seed):
                           size=[.3, .3, 2.7], yaw=rng.uniform(.35,.8)))
     return dict(schema_version=1, scenario=name, seed=seed, boxes=boxes,
                 goal_lio_m=[12.,0.,2.], start_world_m=[0.,0.,.195], start_yaw=0.,
-                seed_effect="bridge sensor-noise RNG plus declared feature geometry jitter",
+                 seed_effect="Gazebo simulator and sensor RNG plus declared feature geometry jitter",
                 outcome="UNVERIFIED", ground_truth_policy="evaluator_only")
 
 
-def generate(root: Path, output: Path, name: str, seed: int):
+def generate(root: Path, output: Path, name: str, seed: int, sensor_noise_std_m: float = 0.015):
+    if not 0.0 <= sensor_noise_std_m <= 1.0:
+        raise ValueError("sensor_noise_std_m must be between 0 and 1 metre")
     data = scenario_geometry(name, seed)
+    # Give each run its own model. Gazebo reads noise from SDF, not the ROS
+    # bridge parameter, and the shared P4 model must remain untouched.
+    source = root / "src/xq_gz_assets/models/xq_iris_mid360_ardupilot"
+    model_dir = output / "models/xq_iris_mid360_ardupilot"
+    shutil.copytree(source, model_dir)
+    model_tree = ET.parse(model_dir / "model.sdf")
+    noise = model_tree.find(".//sensor[@name='xq_mid360_lidar']/lidar/noise/stddev")
+    if noise is None:
+        raise ValueError("Mid-360 Gazebo noise element is missing")
+    noise.text = str(sensor_noise_std_m)
+    model_tree.write(model_dir / "model.sdf", encoding="utf-8", xml_declaration=True)
+    data["sensor_noise_std_m"] = sensor_noise_std_m
+    data["gazebo_seed"] = seed
     tree = ET.parse(root / "src/xq_gz_assets/worlds/xq_p5_structured_room.sdf")
     world = tree.getroot().find("world")
     world.set("name", "impact_static")

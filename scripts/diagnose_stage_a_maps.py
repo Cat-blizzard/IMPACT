@@ -16,7 +16,7 @@ EXPECTED = {
     "/localization/odom": "nav_msgs/msg/Odometry",
     "/impact/information_cloud": "sensor_msgs/msg/PointCloud2",
     "/integrity/information_map": "xq_sim_interfaces/msg/InformationMap",
-    "/xq/p5/cloud_map": "sensor_msgs/msg/PointCloud2",
+    "/cloud_registered": "sensor_msgs/msg/PointCloud2",
     "/xq/p5/navigation_map": "nav_msgs/msg/OccupancyGrid",
     "/grid_map/occupancy_inflate": "sensor_msgs/msg/PointCloud2",
     "/impact/position_cmd": "quadrotor_msgs/msg/PositionCommand",
@@ -26,7 +26,7 @@ EXPECTED = {
 }
 MAP_TOPICS = (
     "/impact/information_cloud", "/integrity/information_map",
-    "/xq/p5/cloud_map", "/xq/p5/navigation_map", "/grid_map/occupancy_inflate",
+    "/cloud_registered", "/xq/p5/navigation_map", "/grid_map/occupancy_inflate",
 )
 
 

@@ -13,6 +13,7 @@ import numpy as np
 import rclpy
 from nav_msgs.msg import Odometry
 from rclpy.executors import ExternalShutdownException
+from rclpy._rclpy_pybind11 import RCLError
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
@@ -297,7 +298,7 @@ def main(args=None) -> None:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
-    except Exception:
+    except RCLError:
         # Humble can surface the private RCLError type when launch invalidates
         # the context while an executor wait-set is being rebuilt.  Suppress
         # only that shutdown race; genuine runtime errors must still fail.
