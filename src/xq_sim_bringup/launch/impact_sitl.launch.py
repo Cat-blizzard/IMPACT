@@ -41,7 +41,8 @@ def setup(context):
                          {"random_seed": config["seed"], "gz_ground_truth_topic": "/world/impact_static/pose/info",
                           "lidar_range_noise_std_m": config["configuration"]["sensor_noise_std_m"]}], output="screen"),
         Node(package="xq_fast_lio", executable="fastlio_mapping", name="xq_fast_lio",
-             parameters=[str(lio / "config/xq_p4.yaml"), {"use_sim_time": True, "integrity_geometry.enable": True}], output="screen"),
+             parameters=[str(lio / "config/xq_p4.yaml"), {"use_sim_time": True,
+                 "integrity_geometry.enable": True, "publish.scan_publish_en": True}], output="screen"),
         autonomy("xq_p4_external_nav", sim=False),
         # Keep the existing sensor-to-map implementation, but no Frontier owns P16 goals.
         autonomy("xq_p5_frontier", {"map_half_extent_m": 35.},

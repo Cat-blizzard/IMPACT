@@ -131,6 +131,18 @@ def test_runner_records_required_map_evidence():
         assert topic in recorder.split(), topic
 
 
+def test_stage_a_publishes_registered_cloud_for_information_map():
+    launch = (impact.ROOT / "src/xq_sim_bringup/launch/impact_sitl.launch.py").read_text()
+    fast_lio = launch.split('executable="fastlio_mapping"', 1)[1].split(
+        'autonomy("xq_p4_external_nav"', 1
+    )[0]
+    assert '"publish.scan_publish_en": True' in fast_lio
+    information_map = launch.split('autonomy("xq_p10_information_map"', 1)[1].split(
+        'Node(package="ego_planner"', 1
+    )[0]
+    assert 'remappings=[("/xq/p5/cloud_map", "/impact/information_cloud")]' in information_map
+
+
 @pytest.mark.parametrize("mission_status,evaluation_status,expected", [
     ("PASS", "PASS", "PASS"), ("FAIL", "PASS", "FAIL"), ("PASS", "FAIL", "FAIL"),
 ])
