@@ -105,6 +105,18 @@ def test_observation_resumes_planning_but_needs_online_certification(node):
     assert not node.cycle.remaining
 
 
+def test_accepted_mission_after_recovery_is_not_benefit_without_margin_gain(node):
+    node.cycle.issue("left")
+    node.cycle.arrived(9.)
+    node.observing_until = 9.5
+    node.recovery_before = dict(AL=10., PL=0., margin=10.)
+    node.tick()
+    node.candidate(candidate(node)); node.tick()
+    rows = [json.loads(line) for line in impact.Path(node.events.name).read_text().splitlines()]
+    assert any(row["event"] == "RECOVERY_NOT_BENEFICIAL" for row in rows)
+    assert not any(row["event"] == "RECOVERY_CONFIRMED" for row in rows)
+
+
 def test_unconfirmed_observation_continues_remaining_recovery_intents(node):
     remaining = [("backtrack", np.array([-.5, 0., 2.]), 1.0)]
     node.cycle.remaining = list(remaining)

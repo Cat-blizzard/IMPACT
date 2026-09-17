@@ -30,6 +30,8 @@ def test_audit_links_forecast_rejection_hover_and_failed_mission_retry():
     assert report["findings"]["new_observation_without_completed_recovery_step"]
     assert report["findings"]["short_hover_closes_recovery_cycles"]
     assert report["cycles"][0]["observation_intent"] == "short_hover"
+    assert report["mechanism_status"] == "NOT_DEMONSTRATED"
+    assert not report["mechanism_checks"]["recovery_trajectory_authorized"]
 
 
 def test_audit_does_not_call_confirmed_recovery_a_failure():
@@ -40,7 +42,7 @@ def test_audit_does_not_call_confirmed_recovery_a_failure():
         event("CERTIFY", 1.2, 2, accepted=True, margin=0.2),
         event("RECOVERY_STEP_DONE", 2.0, 2),
         event("NEW_OBSERVATION", 2.1, 2),
-        event("RECOVERY_CONFIRMED", 2.3, 3),
+        event("RECOVERY_CONFIRMED", 2.3, 3, delta_margin=0.05),
         event("PLAN_REQUEST", 2.2, 3, intent="mission"),
         event("CERTIFY", 2.3, 3, accepted=True, margin=0.15),
     ]
@@ -50,3 +52,24 @@ def test_audit_does_not_call_confirmed_recovery_a_failure():
     assert not report["findings"]["measured_recovery_never_confirmed"]
     assert not report["findings"]["mission_retry_never_authorized"]
     assert not report["findings"]["new_observation_without_completed_recovery_step"]
+    assert report["mechanism_status"] == "PASS"
+    assert all(report["mechanism_checks"].values())
+
+
+def test_audit_rejects_confirmation_without_measured_benefit():
+    events = [
+        event("RECOVERY_FORECAST", 1.0, 1,
+              candidates=[{"name": "up_offset", "predicted_margin": 0.3}]),
+        event("PLAN_REQUEST", 1.1, 2, intent="up_offset"),
+        event("CERTIFY", 1.2, 2, accepted=True, margin=0.2),
+        event("RECOVERY_STEP_DONE", 2.0, 2),
+        event("NEW_OBSERVATION", 2.1, 2),
+        event("PLAN_REQUEST", 2.2, 3, intent="mission"),
+        event("CERTIFY", 2.3, 3, accepted=True, margin=0.15),
+        event("RECOVERY_CONFIRMED", 2.3, 3, delta_margin=-0.05),
+    ]
+    telemetry = [{"sim_time": 1.0, "truth": [0, 0, 0], "intent": "up_offset"},
+                 {"sim_time": 2.1, "truth": [0, 0.4, 0], "intent": "up_offset"}]
+    report = analyze(events, telemetry, reserve_m=0.1, estimator_memory_horizon_s=3.0)
+    assert report["mechanism_status"] == "NOT_DEMONSTRATED"
+    assert not report["mechanism_checks"]["measured_margin_improved"]

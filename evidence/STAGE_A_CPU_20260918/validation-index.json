@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "scope": "CPU Stage A acceptance and Stage B development diagnosis",
+  "flight_git_commit": "75f4e9652709825275237ae2f8b5143f8466a18d",
+  "source_sha256": "c2e95b658bcfbe1bd4ea64aef84110aea49813cca6a28a6f4d78175ee1cfd189",
+  "build_manifest_sha256": "f752f86e43d41207da7e42e8ffc8c698695a034c9075d6e8f92a6191bfad5e1d",
+  "install_root": "/var/tmp/impact-1000-846fb8ab40/install",
+  "profile": "local_cpu",
+  "renderer": "llvmpipe LLVM 15.0.7",
+  "hardware_accelerated": false,
+  "seed": 1000,
+  "config_sha256": "ced0250c794f95e748179261c59de8f2e4403590ed927ccae529a045880c37a6",
+  "calibration_sha256": "771bdffcf3d4422d4641424dab326a08aa5be2b0dffd7f9d2f2f9ff82ea9f038",
+  "authorization_contract_sha256": "a174e70393569863dfcfb3f2d648795a8076a26f64ba211f2b973feff1fff289",
+  "runs": [
+    {
+      "kind": "NO_ARM_SMOKE",
+      "status": "PASS",
+      "result_directory": "experiments/results/stage_a_cpu_75f4e96/smoke/normal-recovery-s1000-20260918T035955-e9e5c7cf",
+      "run_sha256": "fbeea4464d5f5915d29b2afde77ea1635dce5ebb9e81d1b7257e93865fd6d6f3",
+      "smoke_sha256": "034b883ea4c444a3b930e0e5eed8795a613c85f8c3ec8885b0c78af98fe7951b",
+      "rosbag_db3_sha256": "2a218100f7e57f68f40435c179c3297ac3dba52f9146241f60138a8440312b40",
+      "dataflash_bin_sha256": "96299461fc9071d4c46af4b336d87965b1a8b4da9dddba43a7bc355c66bd2df6"
+    },
+    {
+      "kind": "STAGE_A_BASELINE",
+      "status": "PASS",
+      "task_success": true,
+      "termination_confirmed": true,
+      "result_directory": "experiments/results/stage_a_cpu_75f4e96/normal-baseline-s1000/normal-baseline-s1000-20260918T040142-5d0f575a",
+      "stage_a_report_sha256": "7dc419c51c23199478b24bf1a7778416bb6915923a018cdb99a248d450bcc1dd",
+      "map_audit_sha256": "1099c09656a9e2ecafdfa3fb1271773ee220656882e2f9db162d7cfcb20b86e7",
+      "rosbag_db3_sha256": "e90077d80328d6a8665c6dcacc892ee559facb26013acd2f9b67067d9140e433",
+      "dataflash_bin_sha256": "1c48ae3e022ed4cf5af8b78686c5c07da0d14b02f54ab67a5568da2377dc5ce3"
+    },
+    {
+      "kind": "STAGE_A_NORMAL_RECOVERY_POLICY",
+      "status": "PASS",
+      "task_success": true,
+      "termination_confirmed": true,
+      "recovery_mechanism_status": "NOT_DEMONSTRATED",
+      "result_directory": "experiments/results/stage_a_cpu_75f4e96/normal-recovery-s1000/normal-recovery-s1000-20260918T040439-b018a7ac",
+      "stage_a_report_sha256": "524a629bd3fc7002ef317b3d448626c5fb8b9929cb2f900f6fb7776b101bcd54",
+      "recovery_audit_sha256": "f65c176bc9d8317a887ebc5ae620969b72442355285971cdbb860283160afeed",
+      "rosbag_db3_sha256": "08ba98afb216ea9d4ebff76358fb3267fbd2af7decba7fb952c72bcf1c601f6c",
+      "dataflash_bin_sha256": "acadbf4b9b204c57a07e386c09e67812bd5a20773662d12f0d28f1017bcf55f4"
+    },
+    {
+      "kind": "STAGE_B_RECOVERABLE_PROBE",
+      "status": "PASS",
+      "task_success": true,
+      "recovery_mechanism_status": "NOT_DEMONSTRATED",
+      "result_directory": "experiments/results/stage_b_cpu_75f4e96/recoverable-recovery-s1000/recoverable-recovery-s1000-20260918T040813-15d2f466",
+      "run_sha256": "c1382d300a8262652f3d537abd833132fca2fd5efe52a5f2d50970d58341fcbe",
+      "recovery_audit_sha256": "f13346f030896a95630a051dedd63433337fbe132e6b621dd63a784e63e758cf",
+      "rosbag_db3_sha256": "48c8d60f9d62cf47622f6c3315deb5e4b93de86bd85b6e3f052444b1d2323e97",
+      "dataflash_bin_sha256": "3d3569a65e12784808a93484c4fbeebd6511281596a34290c691f243eeb36aa3"
+    },
+    {
+      "kind": "STAGE_B_UNRECOVERABLE_DIAGNOSTIC",
+      "status": "FAIL",
+      "task_success": false,
+      "task_reason": "TASK_TIMEOUT",
+      "termination_confirmed": true,
+      "recovery_mechanism_status": "NOT_DEMONSTRATED",
+      "result_directory": "experiments/results/stage_b_cpu_75f4e96/unrecoverable-recovery-s1000/unrecoverable-recovery-s1000-20260918T041412-94a6f526",
+      "rosbag_readable_messages": 377887,
+      "rosbag_db3_sha256": "d03fc02330199063d05880b61fddb790c3404ad9f12859bb8a7a117239b9d432",
+      "dataflash_bin_sha256": "2e2d2ee37b3c9fdaa872ed00e1a8078c95d9b196ebb67cc02218b0f5baa09af8",
+      "events_sha256": "6317b0e5cf5a7a0c8f525384711bed1035a18f522a93b7731aaa9aad63064ada",
+      "telemetry_sha256": "c1d6b8ee17c79498589de35c79a9928f8a33f31aa57bae2aa8b54e5ed79ec7",
+      "recovery_audit_sha256": "d08fb1b32d4c63d10ae30260fc028791f6a58288ea220e0c0c2dcbf48f6584ec"
+    }
+  ],
+  "regression": {
+    "tests": "372 passed plus ROS authorization contract PASS",
+    "full_build": "14 packages passed",
+    "post_validation_code_source_sha256": "a1563bdfa049b04afee413a04b979d5013fa09853f9bb83eaa84ee6351f218ae",
+    "post_validation_build_manifest_sha256": "fc04beaabb64b44c491148d229acc884185e001ad8df0f8f8827711c884c32ee",
+    "installed_supervisor_sha256": "8c92221acf394fbec6eee008ef9517a2cef09e3fb478dca9af42f5151f523a6a"
+  },
+  "limitations": [
+    "Stage A normal target navigation is accepted only on CPU software rendering.",
+    "The recovery mechanism and recovery benefit are not demonstrated.",
+    "Stage B expansion and the formal 120-run matrix remain blocked.",
+    "Old P5 FAIL, 1.2 m UNVERIFIED_FLIGHT, GPU P4 failure evidence and ExternalNav/EKF historical risk remain open.",
+    "Large raw bags and DataFlash files remain on the server and are indexed by path and SHA-256."
+  ]
+}

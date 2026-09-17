@@ -321,7 +321,8 @@ class SITLSupervisor(Node):
                 if self.cycle.intent == "mission" and self.recovery_observed and self.recovery_before:
                     before, after = self.recovery_before, self.last_metrics
                     da, dp = after["AL"]-before["AL"], after["PL"]-before["PL"]
-                    self.event("RECOVERY_CONFIRMED", before=before, after=after,
+                    event = "RECOVERY_CONFIRMED" if da-dp > 0.0 else "RECOVERY_NOT_BENEFICIAL"
+                    self.event(event, before=before, after=after,
                                delta_AL=da, delta_PL=dp, delta_margin=da-dp,
                                comparison="Each final spline uses its own critical point/direction")
                     self.cycle.remaining.clear()

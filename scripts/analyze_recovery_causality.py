@@ -122,6 +122,12 @@ def analyze(events: list[dict], telemetry: list[dict], *, reserve_m: float,
     observations = [row for row in ordered if row.get("event") == "NEW_OBSERVATION"]
     step_done = [row for row in ordered if row.get("event") == "RECOVERY_STEP_DONE"]
     confirmed = [row for row in ordered if row.get("event") == "RECOVERY_CONFIRMED"]
+    beneficial_confirmations = [
+        row for row in confirmed
+        if isinstance(row.get("delta_margin"), (int, float))
+        and math.isfinite(float(row["delta_margin"]))
+        and float(row["delta_margin"]) > 0.0
+    ]
     short_hover_observations = sum(
         cycle["new_observation_events"] > 0 and cycle["observation_intent"] == "short_hover"
         for cycle in cycles
@@ -147,6 +153,7 @@ def analyze(events: list[dict], telemetry: list[dict], *, reserve_m: float,
         "short_hover_observation_cycles": short_hover_observations,
         "recovery_step_done_events": len(step_done),
         "recovery_confirmed_events": len(confirmed),
+        "positive_margin_recovery_confirmations": len(beneficial_confirmations),
         "accepted_mission_retries": mission_retries_accepted,
         "prediction_minus_actual_margin": gap_summary,
         "total_truth_displacement_m": total_displacement,
@@ -163,6 +170,17 @@ def analyze(events: list[dict], telemetry: list[dict], *, reserve_m: float,
         ),
         "measured_recovery_never_confirmed": not confirmed,
         "mission_retry_never_authorized": mission_retries_accepted == 0,
+    }
+    mechanism_checks = {
+        "online_recovery_triggered": bool(cycles),
+        "recovery_trajectory_authorized": accepted_recovery > 0,
+        "recovery_step_completed": bool(step_done),
+        "post_step_observation_recorded": any(
+            cycle["recovery_step_done_events"] > 0 and cycle["new_observation_events"] > 0
+            for cycle in cycles
+        ),
+        "mission_reauthorized_after_observation": mission_retries_accepted > 0,
+        "measured_margin_improved": bool(beneficial_confirmations),
     }
     hypotheses = [
         {
@@ -186,6 +204,8 @@ def analyze(events: list[dict], telemetry: list[dict], *, reserve_m: float,
         "schema_version": 1,
         "gate": "RECOVERY_CAUSAL_AUDIT",
         "status": "DIAGNOSTIC_COMPLETE",
+        "mechanism_status": "PASS" if all(mechanism_checks.values()) else "NOT_DEMONSTRATED",
+        "mechanism_checks": mechanism_checks,
         "configuration": {
             "margin_reserve_m": reserve_m,
             "estimator_information_memory_horizon_s": estimator_memory_horizon_s,
@@ -208,6 +228,7 @@ def main() -> int:
     parser.add_argument("--reserve-m", type=float, default=0.10)
     parser.add_argument("--estimator-memory-horizon-s", type=float, required=True)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--require-mechanism-pass", action="store_true")
     args = parser.parse_args()
     output = args.output or args.run_dir / "recovery-causal-audit.json"
     report = analyze(_jsonl(args.run_dir / "events.jsonl"),
@@ -216,9 +237,11 @@ def main() -> int:
                      estimator_memory_horizon_s=args.estimator_memory_horizon_s)
     report["run"] = str(args.run_dir.resolve())
     output.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-    print(json.dumps({"status": report["status"], "output": str(output),
-                      "findings": report["findings"]}, indent=2))
-    return 0
+    print(json.dumps({"status": report["status"],
+                      "mechanism_status": report["mechanism_status"],
+                      "mechanism_checks": report["mechanism_checks"],
+                      "output": str(output), "findings": report["findings"]}, indent=2))
+    return int(args.require_mechanism_pass and report["mechanism_status"] != "PASS")
 
 
 if __name__ == "__main__":

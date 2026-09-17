@@ -22,6 +22,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from impact_scenarios import generate
+from analyze_recovery_causality import analyze as analyze_recovery_causality
 
 
 def read_json(path):
@@ -411,10 +412,22 @@ def validate_server(args):
             run,report=experiment(args)
             if not report.get("completed_record") or (scenario == "normal" and report["status"] != "PASS"):
                 raise RuntimeError(f"stage failed: {run}")
+            if scenario == "recoverable" and strategy == "recovery":
+                events = [json.loads(line) for line in (run/"events.jsonl").read_text().splitlines()
+                          if line.strip()]
+                telemetry = [json.loads(line) for line in (run/"telemetry.jsonl").read_text().splitlines()
+                             if line.strip()]
+                audit = analyze_recovery_causality(events, telemetry, reserve_m=0.10,
+                    estimator_memory_horizon_s=float(
+                        report["configuration"]["integrity_information_memory_horizon_s"]))
+                audit["run"] = str(run.resolve())
+                write_json(run/"recovery-causal-audit.json", audit)
+                if audit["mechanism_status"] != "PASS":
+                    raise RuntimeError(f"recovery mechanism not demonstrated: {run}")
             passed.append(str(run))
         if source_hash() != frozen: raise RuntimeError("source changed during validation")
         write_json(marker,dict(status="PASS",source_sha256=frozen,profile=args.profile,runs=passed,external=external_fingerprint(),
-            note="Infrastructure and normal-task validation passed. Recovery benefit is an experimental result, not assumed."))
+            note="Infrastructure, normal-task validation and one causal recovery mechanism gate passed. This is development evidence, not a statistical recovery-benefit claim."))
         print(f"Server stages passed: {marker}")
     except (OSError,ValueError,RuntimeError,KeyError) as error:
         write_json(marker,dict(status="FAIL",source_sha256=frozen,profile=args.profile,runs=passed,reason=str(error)))
