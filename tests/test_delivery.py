@@ -58,6 +58,39 @@ def test_cleanup_audit_rejects_residuals_and_missing_mission(tmp_path):
     assert not impact.cleanup_audit(tmp_path)["passed"]
 
 
+def test_dataflash_termination_requires_land_complete_before_disarm(tmp_path, monkeypatch):
+    log_dir = tmp_path / "sitl_runtime" / "logs"
+    log_dir.mkdir(parents=True)
+    log = log_dir / "00000001.BIN"
+    log.write_bytes(b"fixture")
+
+    class Message:
+        def __init__(self, time_us, event_id):
+            self.TimeUS, self.Id = time_us, event_id
+
+        def get_type(self):
+            return "EV"
+
+    class Reader:
+        def __init__(self, _path):
+            self.messages = iter([Message(1, 10), Message(2, 17), Message(3, 18), Message(4, 11)])
+
+        def recv_msg(self):
+            return next(self.messages, None)
+
+    monkeypatch.setattr(impact.DFReader, "DFReader_binary", Reader)
+    result = impact.audit_dataflash_termination(tmp_path)
+    assert result["confirmed"] and result["confirmed_flight_cycles"] == 1
+    assert result["criterion"].startswith("ARMED followed by LAND_COMPLETE")
+
+    class UnsafeReader(Reader):
+        def __init__(self, _path):
+            self.messages = iter([Message(1, 10), Message(2, 18), Message(3, 28), Message(4, 11)])
+
+    monkeypatch.setattr(impact.DFReader, "DFReader_binary", UnsafeReader)
+    assert not impact.audit_dataflash_termination(tmp_path)["confirmed"]
+
+
 def test_failed_preflight_is_preserved_and_bundled(tmp_path,monkeypatch):
     monkeypatch.setattr(impact,"doctor",lambda *a,**kw:dict(ready=False,checks=dict(gazebo=False)))
     monkeypatch.setattr(impact,"source_hash",lambda:"source")

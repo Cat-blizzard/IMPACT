@@ -19,6 +19,8 @@ import time
 import uuid
 import zipfile
 
+from pymavlink import DFReader
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from impact_scenarios import generate
@@ -234,10 +236,81 @@ def bundle(run):
     return output
 
 
-def classify_outcome(exit_code, mission, evaluation):
+DATAFLASH_FLIGHT_EVENTS = {
+    10: "ARMED",
+    11: "DISARMED",
+    17: "LAND_COMPLETE_MAYBE",
+    18: "LAND_COMPLETE",
+    28: "NOT_LANDED",
+}
+
+
+def audit_dataflash_termination(run):
+    """Require ArduPilot's landed detector before accepting a flown termination."""
+    paths = sorted((Path(run) / "sitl_runtime" / "logs").glob("*.BIN"))
+    events = []
+    armed = False
+    land_complete = False
+    confirmed_cycles = 0
+    try:
+        for path in paths:
+            reader = DFReader.DFReader_binary(str(path))
+            while True:
+                message = reader.recv_msg()
+                if message is None:
+                    break
+                if message.get_type() != "EV":
+                    continue
+                event_id = int(message.Id)
+                if event_id not in DATAFLASH_FLIGHT_EVENTS:
+                    continue
+                event = {
+                    "file": path.name,
+                    "time_us": int(message.TimeUS),
+                    "id": event_id,
+                    "name": DATAFLASH_FLIGHT_EVENTS[event_id],
+                }
+                events.append(event)
+                if event_id == 10:
+                    armed = True
+                    land_complete = False
+                elif event_id == 18 and armed:
+                    land_complete = True
+                elif event_id == 28 and armed:
+                    land_complete = False
+                elif event_id == 11:
+                    if armed and land_complete:
+                        confirmed_cycles += 1
+                    armed = False
+                    land_complete = False
+    except (AttributeError, OSError, TypeError, ValueError) as error:
+        return {
+            "status": "ERROR",
+            "confirmed": False,
+            "files": [str(path) for path in paths],
+            "events": events,
+            "error": str(error),
+        }
+    return {
+        "status": "PASS" if confirmed_cycles > 0 and not armed else "FAIL",
+        "confirmed": bool(confirmed_cycles > 0 and not armed),
+        "files": [str(path) for path in paths],
+        "events": events,
+        "confirmed_flight_cycles": confirmed_cycles,
+        "armed_at_log_end": armed,
+        "criterion": "ARMED followed by LAND_COMPLETE, no later NOT_LANDED, then DISARMED",
+    }
+
+
+def classify_outcome(exit_code, mission, evaluation, dataflash_termination=None):
     """Keep completed failures, but require both mission and evaluation to pass."""
+    flew = bool(mission.get("termination", {}).get("armed_seen"))
+    independent_termination = bool(
+        not flew
+        or (dataflash_termination is not None and dataflash_termination.get("confirmed") is True)
+    )
     completed = bool(exit_code == 0 and mission.get("termination_confirmed") is True
-                     and evaluation.get("samples", 0) >= 50)
+                     and independent_termination and evaluation.get("samples", 0) >= 50)
     success = (completed and mission.get("status") == "PASS"
                and mission.get("task_success") is True
                and evaluation.get("status") == "PASS"
@@ -325,14 +398,17 @@ def experiment(args):
             return run, report
         mission = read_json(run/"mission.json")
         evaluation = read_json(run/"evaluation.json")
+        dataflash_termination = audit_dataflash_termination(run)
+        write_json(run / "dataflash-termination.json", dataflash_termination)
         cleanup = cleanup_audit(run)
         report["cleanup"] = cleanup
         if not cleanup["passed"]:
             raise RuntimeError("launcher cleanup failed; inspect cleanup-processes.jsonl")
         performance(run)
-        report.update(mission=mission, evaluation=evaluation, launcher_exit_code=code)
+        report.update(mission=mission, evaluation=evaluation,
+                      dataflash_termination=dataflash_termination, launcher_exit_code=code)
         # A task failure is a valid experimental outcome, not an infrastructure pass.
-        report.update(classify_outcome(code, mission, evaluation))
+        report.update(classify_outcome(code, mission, evaluation, dataflash_termination))
     except (OSError, ValueError, KeyError, RuntimeError) as error:
         report.update(status="ERROR", reason=str(error), completed_record=False)
     finally:
@@ -632,6 +708,10 @@ def stage_a(args):
         "termination_confirmed": bool(mission.get("termination_confirmed")),
         "rosbag_metadata_present": (run / "rosbag" / "metadata.yaml").is_file(),
         "dataflash_present": any((run / "sitl_runtime" / "logs").glob("*.BIN")),
+        "dataflash_landing_confirmed": bool(
+            report.get("dataflash_termination", {}).get("confirmed")
+            or not mission.get("termination", {}).get("armed_seen")
+        ),
         "authorized_command_execution_verified": authorization_evidence_complete(
             authorization_report, authorization_contract),
         "map_content_verified": (map_report.get("status") == "MAP_CONTENT_VERIFIED"

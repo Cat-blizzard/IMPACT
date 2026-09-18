@@ -254,6 +254,18 @@ def test_goal_reached_does_not_override_failed_termination_deadline(mission_stat
     assert result == dict(status=expected, completed_record=True)
 
 
+def test_flown_mission_requires_independent_dataflash_landing_confirmation():
+    mission = dict(status="PASS", task_success=True, termination_confirmed=True,
+                   termination=dict(armed_seen=True))
+    evaluation = dict(status="PASS", samples=100, collision_events=0)
+    assert impact.classify_outcome(0, mission, evaluation) == dict(
+        status="FAIL", completed_record=False)
+    assert impact.classify_outcome(0, mission, evaluation, {"confirmed": False}) == dict(
+        status="FAIL", completed_record=False)
+    assert impact.classify_outcome(0, mission, evaluation, {"confirmed": True}) == dict(
+        status="PASS", completed_record=True)
+
+
 def test_unconfirmed_termination_cannot_be_completed_outcome():
     result = impact.classify_outcome(0,
         dict(status="PASS", task_success=True, termination_confirmed=False),
