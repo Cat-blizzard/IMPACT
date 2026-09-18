@@ -38,7 +38,7 @@ def test_static_observability_flags_visible_cap_and_missing_ceiling():
 def test_static_observability_accepts_distant_caps_and_ceiling():
     result = static_observability(scenario([
         {"name": "floor", "center": [20, 0, -0.1], "size": [160, 16, 0.2]},
-        {"name": "ceiling", "center": [20, 0, 4.1], "size": [160, 4.4, 0.2]},
+        {"name": "ceiling", "center": [20, 0, 10.1], "size": [160, 4.4, 0.2]},
         {"name": "start_wall", "center": [-60, 0, 2], "size": [0.2, 4.4, 4]},
         {"name": "end_wall", "center": [100, 0, 2], "size": [0.2, 4.4, 4]},
     ]), lidar_range_m=40.0, vertical_min_rad=math.radians(-7),
@@ -47,6 +47,9 @@ def test_static_observability_accepts_distant_caps_and_ceiling():
     assert all(cap["visible_route_interval_m"] is None
                for cap in result["longitudinal_caps"])
     assert result["ceiling_present"]
+    assert math.isclose(result["ceiling_bottom_z_m"], 10.0)
+    assert math.isclose(result["ceiling_clearance_above_goal_m"], 8.0)
+    assert result["ceiling_intersection_within_lidar_range"]
 
 
 def test_static_observability_reports_entry_only_longitudinal_anchor():

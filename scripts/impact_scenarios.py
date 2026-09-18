@@ -17,7 +17,9 @@ def scenario_geometry(name, seed):
     }[name]
     boxes = [
         dict(name="floor", center=[20, 0, -0.1], size=[160, 16, 0.2]),
-        dict(name="ceiling", center=[20, 0, 4.1], size=[160, 4.4, 0.2]),
+        # Keep an overhead horizontal plane inside the Mid-360 vertical field
+        # of view, but outside the certified flight and braking envelope.
+        dict(name="ceiling", center=[20, 0, 10.1], size=[160, 4.4, 0.2]),
         dict(name="left_wall", center=[20, 2.1, 2], size=[160, 0.2, 4.2]),
         dict(name="right_wall", center=[20, -2.1, 2], size=[160, 0.2, 4.2]),
         # The Mid-360 model has a 40 m range. The start cap gives normal a
@@ -41,7 +43,7 @@ def scenario_geometry(name, seed):
         "recoverable": [0.0, 5.0],
         "unrecoverable": None,
     }[name]
-    return dict(schema_version=3, scenario=name, seed=seed, boxes=boxes,
+    return dict(schema_version=4, scenario=name, seed=seed, boxes=boxes,
                 goal_lio_m=[12.,0.,2.], start_world_m=[0.,0.,.195], start_yaw=0.,
                 sensor_observability_design={
                     "lidar_range_m": 40.0,
@@ -50,6 +52,8 @@ def scenario_geometry(name, seed):
                     "start_anchor_policy": anchor_policy,
                     "start_anchor_visible_route_x_m": anchor_interval,
                     "ceiling_supplies_vertical_plane": True,
+                    "ceiling_bottom_z_m": 10.0,
+                    "certified_flight_max_z_m": 2.9,
                     "scenario_features_supply_longitudinal_planes": name != "unrecoverable",
                 },
                 seed_effect="Gazebo simulator and sensor RNG plus declared feature geometry jitter",

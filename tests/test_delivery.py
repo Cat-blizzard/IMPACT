@@ -19,8 +19,11 @@ def test_seed_changes_real_geometry_and_paired_arms_share_world(tmp_path):
     assert scenario_geometry("unrecoverable",7)["seed_effect"].startswith("Gazebo")
     shell = scenario_geometry("unrecoverable", 7)
     boxes = {box["name"]: box for box in shell["boxes"]}
-    assert shell["schema_version"] == 3
+    assert shell["schema_version"] == 4
     assert "ceiling" in boxes
+    assert boxes["ceiling"]["center"][2] == 10.1
+    assert shell["sensor_observability_design"]["ceiling_bottom_z_m"] == 10.0
+    assert shell["sensor_observability_design"]["certified_flight_max_z_m"] == 2.9
     assert boxes["start_wall"]["center"][0] < -40.0
     assert boxes["end_wall"]["center"][0] - shell["goal_lio_m"][0] > 40.0
     assert shell["sensor_observability_design"]["longitudinal_caps_outside_range"]

@@ -77,6 +77,14 @@ def static_observability(scenario: dict, *, lidar_range_m: float,
     )
     downward = abs(min(float(vertical_min_rad), 0.0))
     floor_intersection = floor_drop / math.tan(downward) if downward > 0.0 else math.inf
+    ceiling_bottom = min(
+        (float(box["center"][2]) - 0.5 * float(box["size"][2])
+         for box in boxes if box["name"] in ceilings),
+        default=math.inf,
+    )
+    ceiling_rise = ceiling_bottom - operational_height
+    upward = max(float(vertical_max_rad), 0.0)
+    ceiling_intersection = ceiling_rise / math.tan(upward) if upward > 0.0 else math.inf
     return {
         "lidar_range_m": float(lidar_range_m),
         "vertical_fov_rad": [float(vertical_min_rad), float(vertical_max_rad)],
@@ -84,6 +92,14 @@ def static_observability(scenario: dict, *, lidar_range_m: float,
         "longitudinal_cap_visible_from_route": any(item["within_lidar_range"] for item in caps),
         "ceiling_surfaces": ceilings,
         "ceiling_present": bool(ceilings),
+        "ceiling_bottom_z_m": float(ceiling_bottom) if math.isfinite(ceiling_bottom) else None,
+        "ceiling_clearance_above_goal_m": (float(ceiling_bottom - goal[2])
+                                            if math.isfinite(ceiling_bottom) else None),
+        "approximate_ceiling_intersection_range_m": (float(ceiling_intersection)
+                                                       if math.isfinite(ceiling_intersection) else None),
+        "ceiling_intersection_within_lidar_range": bool(
+            math.isfinite(ceiling_intersection) and 0.0 <= ceiling_intersection <= lidar_range_m
+        ),
         "floor_surfaces": floors,
         "approximate_floor_intersection_range_m": float(floor_intersection),
         "floor_intersection_within_lidar_range": bool(floor_intersection <= lidar_range_m),
