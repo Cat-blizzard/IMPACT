@@ -5,6 +5,7 @@
 #include "std_msgs/msg/empty.hpp"
 #include "visualization_msgs/msg/marker.hpp"
 #include <rclcpp/rclcpp.hpp>
+#include <cmath>
 
 rclcpp::Publisher<quadrotor_msgs::msg::PositionCommand>::SharedPtr pos_cmd_pub;
 rclcpp::Node::SharedPtr traj_server_node;
@@ -78,10 +79,19 @@ std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, rclc
   std::pair<double, double> yaw_yawdot(0, 0);
   double yaw = 0;
   double yawdot = 0;
+  const double dt = (time_now - time_last).seconds();
+  // Simulation callbacks can share a timestamp during startup or a clock
+  // transition. Never divide by that interval and publish a NaN yaw rate.
+  if (!std::isfinite(dt) || dt <= 1e-6)
+  {
+    yaw_yawdot.first = std::isfinite(last_yaw_) ? last_yaw_ : 0.0;
+    yaw_yawdot.second = 0.0;
+    return yaw_yawdot;
+  }
 
   Eigen::Vector3d dir = t_cur + time_forward_ <= traj_duration_ ? traj_[0].evaluateDeBoorT(t_cur + time_forward_) - pos : traj_[0].evaluateDeBoorT(traj_duration_) - pos;
   double yaw_temp = dir.norm() > 0.1 ? atan2(dir(1), dir(0)) : last_yaw_;
-  double max_yaw_change = YAW_DOT_MAX_PER_SEC * (time_now - time_last).seconds();
+  double max_yaw_change = YAW_DOT_MAX_PER_SEC * dt;
   if (yaw_temp - last_yaw_ > PI)
   {
     if (yaw_temp - last_yaw_ - 2 * PI < -max_yaw_change)
@@ -98,7 +108,7 @@ std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, rclc
       if (yaw - last_yaw_ > PI)
         yawdot = -YAW_DOT_MAX_PER_SEC;
       else
-        yawdot = (yaw_temp - last_yaw_) / (time_now - time_last).seconds();
+        yawdot = (yaw_temp - last_yaw_) / dt;
     }
   }
   else if (yaw_temp - last_yaw_ < -PI)
@@ -117,7 +127,7 @@ std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, rclc
       if (yaw - last_yaw_ < -PI)
         yawdot = YAW_DOT_MAX_PER_SEC;
       else
-        yawdot = (yaw_temp - last_yaw_) / (time_now - time_last).seconds();
+        yawdot = (yaw_temp - last_yaw_) / dt;
     }
   }
   else
@@ -146,13 +156,18 @@ std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, rclc
       else if (yaw - last_yaw_ < -PI)
         yawdot = YAW_DOT_MAX_PER_SEC;
       else
-        yawdot = (yaw_temp - last_yaw_) / (time_now - time_last).seconds();
+        yawdot = (yaw_temp - last_yaw_) / dt;
     }
   }
 
   if (fabs(yaw - last_yaw_) <= max_yaw_change)
     yaw = 0.5 * last_yaw_ + 0.5 * yaw; // nieve LPF
   yawdot = 0.5 * last_yaw_dot_ + 0.5 * yawdot;
+  if (!std::isfinite(yaw) || !std::isfinite(yawdot))
+  {
+    yaw = std::isfinite(last_yaw_) ? last_yaw_ : 0.0;
+    yawdot = 0.0;
+  }
   last_yaw_ = yaw;
   last_yaw_dot_ = yawdot;
 

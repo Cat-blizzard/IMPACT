@@ -126,20 +126,23 @@ class SITLArbiter(Node):
             and 0 <= wall-self.auth_wall < 0.5 and not self.guard.reset_latched
             and self.phase == "ACTIVE" and phase_fresh and fresh)
         execution = dict(emitted=False)
+        rejection_reason = None
         # Takeoff and landing belong to FCU submodes: no competing position targets.
         if self.phase in ("ACTIVE", "HOVER"):
             cmd = self.command
             if (self.phase == "ACTIVE" and phase_fresh and not self.guard.reset_latched
                 and fresh and cmd and wall-self.auth_wall < 0.5
-                and self.guard.allows(cmd.trajectory_id, stamp_s(cmd.header.stamp), now,
+                and (rejection_reason := self.guard.allow_reason(
+                    cmd.trajectory_id, stamp_s(cmd.header.stamp), now,
                     cmd.header.frame_id,
                     np.r_[xyz(cmd.position), xyz(cmd.velocity), xyz(cmd.acceleration),
-                          cmd.yaw, cmd.yaw_dot], wall-self.command_wall)):
+                          cmd.yaw, cmd.yaw_dot], wall-self.command_wall)) is None):
                 target, velocity, acceleration = (
                     xyz(cmd.position), xyz(cmd.velocity), xyz(cmd.acceleration))
                 yaw, yaw_rate, mode = cmd.yaw, cmd.yaw_dot, "TRACK"
                 if np.linalg.norm(target-measured) > 0.35:
                     target, mode = None, "BRAKE"
+                    rejection_reason = "TRACKING_DISTANCE"
                 else:
                     self.brake_state = None
             if target is None:
@@ -206,6 +209,7 @@ class SITLArbiter(Node):
             phase=self.phase, phase_fresh=phase_fresh, fresh_odom=fresh,
             reset=self.guard.reset_latched, authorized=authorized,
             authorization=self.last_authorization_receipt, execution=execution,
+            rejection_reason=rejection_reason,
             measured_position=measured.tolist(),
             measured_velocity=xyz(self.odom.twist.twist.linear).tolist(),
             odom_stamp=stamp_s(self.odom.header.stamp), ground_truth_subscribed=False))))

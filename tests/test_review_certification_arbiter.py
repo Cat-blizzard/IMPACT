@@ -241,6 +241,19 @@ def test_execution_telemetry_links_exact_final_setpoint_and_received_authorizati
     assert status["authorization"]["received_sim_time"] == 10.
 
 
+def test_execution_guard_reports_nonfinite_command_without_relaxing_gate(arbiter):
+    node, now, publications, statuses = arbiter
+    command, _ = tracking_inputs(node, now)
+    command.yaw_dot = float("nan")
+    node.position_command(command)
+    node.tick()
+    status = json.loads(statuses[-1].data)
+    assert status["mode"] == "BRAKE"
+    assert status["authorized"]
+    assert status["rejection_reason"] == "NONFINITE_COMMAND"
+    assert publications[-1].type_mask == 2552
+
+
 def test_expired_authorization_reports_false_and_brakes_old_command(arbiter):
     node, now, publications, statuses = arbiter
     tracking_inputs(node, now)

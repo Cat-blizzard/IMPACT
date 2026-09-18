@@ -76,14 +76,29 @@ class ExecutionGuard:
 
     def allows(self, trajectory: int, stamp: float, now: float, frame: str,
                values: np.ndarray, input_age_wall: float) -> bool:
+        return self.allow_reason(trajectory, stamp, now, frame, values, input_age_wall) is None
+
+    def allow_reason(self, trajectory: int, stamp: float, now: float, frame: str,
+                     values: np.ndarray, input_age_wall: float) -> str | None:
+        """Return the first fail-closed execution reason for diagnostics."""
         if not self.clock(now):
-            return False
+            return "CLOCK_RESET"
         auth = self.current
-        return bool(auth and auth.accepted and trajectory == auth.trajectory
-                    and auth.issued <= now < auth.expires
-                    and frame == "xq_lio_map" and np.isfinite(values).all()
-                    and 0 <= now - stamp <= self.max_age
-                    and 0 <= input_age_wall <= self.max_age)
+        if not auth or not auth.accepted:
+            return "NO_AUTHORIZATION"
+        if trajectory != auth.trajectory:
+            return "TRAJECTORY_MISMATCH"
+        if not auth.issued <= now < auth.expires:
+            return "AUTHORIZATION_EXPIRED"
+        if frame != "xq_lio_map":
+            return "FRAME_MISMATCH"
+        if not np.isfinite(values).all():
+            return "NONFINITE_COMMAND"
+        if not 0 <= now - stamp <= self.max_age:
+            return "COMMAND_TIMESTAMP_STALE"
+        if not 0 <= input_age_wall <= self.max_age:
+            return "COMMAND_RECEIPT_STALE"
+        return None
 
 
 def derivative_bounds(points, knots, degree):
