@@ -54,8 +54,17 @@ def static_observability(scenario: dict, *, lidar_range_m: float,
         size = np.asarray(box["size"], dtype=float)
         if size[0] <= 0.5 and size[1] >= 3.0 and size[2] >= 2.0:
             distance = max(low_x - center[0], 0.0, center[0] - high_x)
+            visible_low = max(low_x, float(center[0]) - lidar_range_m)
+            visible_high = min(high_x, float(center[0]) + lidar_range_m)
+            visible_interval = ([float(visible_low), float(visible_high)]
+                                if visible_low <= visible_high else None)
             caps.append({"name": box["name"], "minimum_path_distance_m": float(distance),
-                         "within_lidar_range": bool(distance <= lidar_range_m)})
+                         "within_lidar_range": visible_interval is not None,
+                         "visible_route_interval_m": visible_interval,
+                         "covers_route_start": bool(visible_interval is not None
+                                                     and visible_low <= low_x),
+                         "covers_route_end": bool(visible_interval is not None
+                                                   and visible_high >= high_x)})
         if size[2] <= 0.5 and size[0] >= 10.0 and center[2] > goal[2]:
             ceilings.append(box["name"])
         if size[2] <= 0.5 and size[0] >= 10.0 and center[2] < start[2]:

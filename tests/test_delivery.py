@@ -19,11 +19,20 @@ def test_seed_changes_real_geometry_and_paired_arms_share_world(tmp_path):
     assert scenario_geometry("unrecoverable",7)["seed_effect"].startswith("Gazebo")
     shell = scenario_geometry("unrecoverable", 7)
     boxes = {box["name"]: box for box in shell["boxes"]}
-    assert shell["schema_version"] == 2
+    assert shell["schema_version"] == 3
     assert "ceiling" in boxes
     assert boxes["start_wall"]["center"][0] < -40.0
     assert boxes["end_wall"]["center"][0] - shell["goal_lio_m"][0] > 40.0
     assert shell["sensor_observability_design"]["longitudinal_caps_outside_range"]
+    normal = scenario_geometry("normal", 7)
+    recoverable = scenario_geometry("recoverable", 7)
+    assert next(box for box in normal["boxes"] if box["name"] == "start_wall")["center"][0] == -20.0
+    assert normal["sensor_observability_design"]["start_anchor_policy"] == "full_route"
+    assert normal["sensor_observability_design"]["start_anchor_visible_route_x_m"] == [0.0, 12.0]
+    assert next(box for box in recoverable["boxes"] if box["name"] == "start_wall")["center"][0] == -35.0
+    assert recoverable["sensor_observability_design"]["start_anchor_policy"] == "entry_only"
+    assert recoverable["sensor_observability_design"]["start_anchor_visible_route_x_m"] == [0.0, 5.0]
+    assert not recoverable["sensor_observability_design"]["longitudinal_caps_outside_range"]
     generate(impact.ROOT,tmp_path,"normal",7)
     world=(tmp_path/"world.sdf").read_text()
     assert "ArduPilot" not in world  # plugin belongs to the included actuation model

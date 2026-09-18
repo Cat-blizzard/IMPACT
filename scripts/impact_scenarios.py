@@ -10,28 +10,45 @@ def scenario_geometry(name, seed):
     if name not in ("normal", "recoverable", "unrecoverable"):
         raise ValueError("unknown scenario")
     rng = random.Random(seed)
+    start_wall_x = {
+        "normal": -20.0,
+        "recoverable": -35.0,
+        "unrecoverable": -60.0,
+    }[name]
     boxes = [
         dict(name="floor", center=[20, 0, -0.1], size=[160, 16, 0.2]),
         dict(name="ceiling", center=[20, 0, 4.1], size=[160, 4.4, 0.2]),
         dict(name="left_wall", center=[20, 2.1, 2], size=[160, 0.2, 4.2]),
         dict(name="right_wall", center=[20, -2.1, 2], size=[160, 0.2, 4.2]),
-        # The Mid-360 model has a 40 m range. Keep longitudinal caps outside
-        # that range everywhere on the 0--12 m route so they cannot silently
-        # eliminate the intended corridor-axis observability challenge.
+        # The Mid-360 model has a 40 m range. The start cap gives normal a
+        # route-wide anchor, recoverable an entry-only anchor through x=5 m,
+        # and unrecoverable no longitudinal cap anywhere on the route.
         dict(name="end_wall", center=[100, 0, 2], size=[0.2, 4.4, 4.2]),
-        dict(name="start_wall", center=[-60, 0, 2], size=[0.2, 4.4, 4.2]),
+        dict(name="start_wall", center=[start_wall_x, 0, 2], size=[0.2, 4.4, 4.2]),
     ]
     xs = (2., 5., 8., 11., 14.) if name == "normal" else (5., 6.) if name == "recoverable" else ()
     for i, x in enumerate(xs):
         # Real box geometry, identical for all policy arms of a paired seed.
         boxes.append(dict(name=f"feature_{i}", center=[x+rng.uniform(-.12,.12), 1.88, 2.],
                           size=[.3, .3, 2.7], yaw=rng.uniform(.35,.8)))
-    return dict(schema_version=2, scenario=name, seed=seed, boxes=boxes,
+    anchor_policy = {
+        "normal": "full_route",
+        "recoverable": "entry_only",
+        "unrecoverable": "none",
+    }[name]
+    anchor_interval = {
+        "normal": [0.0, 12.0],
+        "recoverable": [0.0, 5.0],
+        "unrecoverable": None,
+    }[name]
+    return dict(schema_version=3, scenario=name, seed=seed, boxes=boxes,
                 goal_lio_m=[12.,0.,2.], start_world_m=[0.,0.,.195], start_yaw=0.,
                 sensor_observability_design={
                     "lidar_range_m": 40.0,
                     "route_x_m": [0.0, 12.0],
-                    "longitudinal_caps_outside_range": True,
+                    "longitudinal_caps_outside_range": name == "unrecoverable",
+                    "start_anchor_policy": anchor_policy,
+                    "start_anchor_visible_route_x_m": anchor_interval,
                     "ceiling_supplies_vertical_plane": True,
                     "scenario_features_supply_longitudinal_planes": name != "unrecoverable",
                 },
