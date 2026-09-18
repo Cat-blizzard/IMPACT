@@ -11,20 +11,31 @@ def scenario_geometry(name, seed):
         raise ValueError("unknown scenario")
     rng = random.Random(seed)
     boxes = [
-        dict(name="floor", center=[20, 0, -0.1], size=[80, 16, 0.2]),
-        dict(name="left_wall", center=[20, 2.1, 2], size=[80, 0.2, 4]),
-        dict(name="right_wall", center=[20, -2.1, 2], size=[80, 0.2, 4]),
-        dict(name="end_wall", center=[60, 0, 2], size=[0.2, 4.4, 4]),
-        dict(name="start_wall", center=[-20, 0, 2], size=[0.2, 4.4, 4]),
+        dict(name="floor", center=[20, 0, -0.1], size=[160, 16, 0.2]),
+        dict(name="ceiling", center=[20, 0, 4.1], size=[160, 4.4, 0.2]),
+        dict(name="left_wall", center=[20, 2.1, 2], size=[160, 0.2, 4.2]),
+        dict(name="right_wall", center=[20, -2.1, 2], size=[160, 0.2, 4.2]),
+        # The Mid-360 model has a 40 m range. Keep longitudinal caps outside
+        # that range everywhere on the 0--12 m route so they cannot silently
+        # eliminate the intended corridor-axis observability challenge.
+        dict(name="end_wall", center=[100, 0, 2], size=[0.2, 4.4, 4.2]),
+        dict(name="start_wall", center=[-60, 0, 2], size=[0.2, 4.4, 4.2]),
     ]
     xs = (2., 5., 8., 11., 14.) if name == "normal" else (5., 6.) if name == "recoverable" else ()
     for i, x in enumerate(xs):
         # Real box geometry, identical for all policy arms of a paired seed.
         boxes.append(dict(name=f"feature_{i}", center=[x+rng.uniform(-.12,.12), 1.88, 2.],
                           size=[.3, .3, 2.7], yaw=rng.uniform(.35,.8)))
-    return dict(schema_version=1, scenario=name, seed=seed, boxes=boxes,
+    return dict(schema_version=2, scenario=name, seed=seed, boxes=boxes,
                 goal_lio_m=[12.,0.,2.], start_world_m=[0.,0.,.195], start_yaw=0.,
-                 seed_effect="Gazebo simulator and sensor RNG plus declared feature geometry jitter",
+                sensor_observability_design={
+                    "lidar_range_m": 40.0,
+                    "route_x_m": [0.0, 12.0],
+                    "longitudinal_caps_outside_range": True,
+                    "ceiling_supplies_vertical_plane": True,
+                    "scenario_features_supply_longitudinal_planes": name != "unrecoverable",
+                },
+                seed_effect="Gazebo simulator and sensor RNG plus declared feature geometry jitter",
                 outcome="UNVERIFIED", ground_truth_policy="evaluator_only")
 
 

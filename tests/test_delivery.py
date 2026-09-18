@@ -17,6 +17,13 @@ def test_seed_changes_real_geometry_and_paired_arms_share_world(tmp_path):
     assert a == scenario_geometry("recoverable",7)
     assert a != scenario_geometry("recoverable",8)
     assert scenario_geometry("unrecoverable",7)["seed_effect"].startswith("Gazebo")
+    shell = scenario_geometry("unrecoverable", 7)
+    boxes = {box["name"]: box for box in shell["boxes"]}
+    assert shell["schema_version"] == 2
+    assert "ceiling" in boxes
+    assert boxes["start_wall"]["center"][0] < -40.0
+    assert boxes["end_wall"]["center"][0] - shell["goal_lio_m"][0] > 40.0
+    assert shell["sensor_observability_design"]["longitudinal_caps_outside_range"]
     generate(impact.ROOT,tmp_path,"normal",7)
     world=(tmp_path/"world.sdf").read_text()
     assert "ArduPilot" not in world  # plugin belongs to the included actuation model
