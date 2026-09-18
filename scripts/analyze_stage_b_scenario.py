@@ -170,6 +170,40 @@ def _bag(run: Path) -> dict:
     return {"geometry": summarize(geometry), "integrity": summarize(integrity, True)}
 
 
+def classify_hypothesis(scenario: str, events: dict, dominant_axis: str | None) -> dict:
+    has_mission_evidence = events["certifications"] > 0
+    longitudinal_weak = dominant_axis == "x"
+    rejected = events["certifications_rejected"] > 0 if has_mission_evidence else None
+    recovery = events["recovery_forecasts"] > 0 if has_mission_evidence else None
+    checks = {
+        "longitudinal_direction_is_empirically_weak": longitudinal_weak,
+        "mission_certification_rejected": rejected,
+        "online_recovery_triggered": recovery,
+    }
+    if not has_mission_evidence:
+        return {
+            "overall": "PARTIALLY_SUPPORTED" if longitudinal_weak else "NOT_EVALUATED",
+            "localization_condition": "SUPPORTED" if longitudinal_weak else "NOT_EVALUATED",
+            "mission_condition": "NOT_EVALUATED",
+            "checks": checks,
+        }
+    if scenario == "normal":
+        relevant = {"mission_certification_never_rejected": not rejected}
+    elif scenario == "recoverable":
+        relevant = checks
+    else:
+        relevant = {
+            "longitudinal_direction_is_empirically_weak": longitudinal_weak,
+            "mission_certification_rejected": rejected,
+        }
+    return {
+        "overall": "SUPPORTED" if all(relevant.values()) else "CONTRADICTED",
+        "localization_condition": "SUPPORTED" if longitudinal_weak else "CONTRADICTED",
+        "mission_condition": "SUPPORTED" if all(relevant.values()) else "CONTRADICTED",
+        "checks": relevant,
+    }
+
+
 def analyze_run(run: Path) -> dict:
     scenario = json.loads((run / "scenario.json").read_text(encoding="utf-8"))
     lidar_range, vertical_min, vertical_max = _sensor_contract(run)
@@ -177,23 +211,14 @@ def analyze_run(run: Path) -> dict:
     events = _events(run)
     axes = streams["geometry"]["weak_axis_counts_xyz"]
     dominant_axis = max(AXES, key=lambda axis: axes[axis]) if sum(axes.values()) else None
-    hypothesis_checks = {
-        "longitudinal_direction_is_empirically_weak": dominant_axis == "x",
-        "mission_certification_rejected": events["certifications_rejected"] > 0,
-        "online_recovery_triggered": events["recovery_forecasts"] > 0,
-    }
-    if scenario["scenario"] == "normal":
-        relevant = {"mission_certification_never_rejected": events["certifications_rejected"] == 0}
-    elif scenario["scenario"] == "recoverable":
-        relevant = hypothesis_checks
-    else:
-        relevant = {key: hypothesis_checks[key] for key in
-                    ("longitudinal_direction_is_empirically_weak", "mission_certification_rejected")}
+    classification = classify_hypothesis(scenario["scenario"], events, dominant_axis)
     return {
         "schema_version": 1,
         "analysis": "STAGE_B_SCENARIO_CONDITION_AUDIT",
         "status": "DIAGNOSTIC_COMPLETE",
-        "scenario_hypothesis": "SUPPORTED" if all(relevant.values()) else "CONTRADICTED",
+        "scenario_hypothesis": classification["overall"],
+        "localization_condition": classification["localization_condition"],
+        "mission_condition": classification["mission_condition"],
         "run": str(run.resolve()),
         "scenario": scenario["scenario"],
         "seed": scenario["seed"],
@@ -202,7 +227,7 @@ def analyze_run(run: Path) -> dict:
             vertical_min_rad=vertical_min, vertical_max_rad=vertical_max),
         "recorded_streams": streams,
         "recorded_events": events,
-        "hypothesis_checks": relevant,
+        "hypothesis_checks": classification["checks"],
         "limitations": [
             "This is a diagnostic of recorded conditions, not a task or recovery acceptance gate.",
             "Weak-axis majority is categorical evidence; it does not replace calibrated PL and margin checks.",

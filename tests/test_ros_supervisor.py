@@ -13,7 +13,8 @@ from std_msgs.msg import Header
 from xq_sim_interfaces.msg import DirectionalIntegrity, PlannerCandidate
 from xq_autonomy.p10_information_map_node import _xyz_cloud
 from xq_autonomy.sitl_supervisor_node import (
-    RECOVERY_SETTLE_TIMEOUT_S, SITLSupervisor, ros_stamp,
+    RECOVERY_INFORMATION_VISIBILITY_RADIUS_M, RECOVERY_SETTLE_TIMEOUT_S,
+    SITLSupervisor, minimum_recovery_information_radius_m, ros_stamp,
 )
 from xq_autonomy.sitl_evaluator_node import box_clearance
 import impact
@@ -70,6 +71,16 @@ def test_final_optimized_trajectory_rejected_and_no_intents_hold(node):
     assert not node.test_pubs["auth_pub"][-1].authorized
     assert not node.cycle.remaining
     assert not node.completed
+
+
+def test_recovery_information_radius_can_include_a_safe_surface(node):
+    assert node.recovery_information_visibility_radius == pytest.approx(
+        RECOVERY_INFORMATION_VISIBILITY_RADIUS_M
+    )
+    assert (
+        node.recovery_information_visibility_radius
+        > minimum_recovery_information_radius_m()
+    )
 
 
 def test_active_trajectory_recertifies_current_covariance_and_revokes(node):

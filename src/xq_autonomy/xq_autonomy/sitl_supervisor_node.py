@@ -26,6 +26,28 @@ from .p10_active_perception_node import _cloud_xyz
 from .sitl_integrity import certify_final, RecoveryCycle
 
 RECOVERY_SETTLE_TIMEOUT_S = 3.0
+RECOVERY_INFORMATION_VISIBILITY_RADIUS_M = 2.8
+RECOVERY_SPEED_MPS = 0.3
+RECOVERY_LATENCY_P99_S = 0.15
+RECOVERY_BODY_RADIUS_M = 0.35
+RECOVERY_BASE_RESERVE_M = 0.10
+RECOVERY_TRACKING_RESERVE_M = 0.10
+RECOVERY_MARGIN_RESERVE_M = 0.10
+
+
+def minimum_recovery_information_radius_m() -> float:
+    """Lower bound before directional PL for a safe informative surface."""
+    latency_reserve = (
+        RECOVERY_SPEED_MPS * RECOVERY_LATENCY_P99_S
+        + 0.5 * RECOVERY_LATENCY_P99_S * RECOVERY_LATENCY_P99_S
+    )
+    return (
+        RECOVERY_BODY_RADIUS_M
+        + RECOVERY_BASE_RESERVE_M
+        + RECOVERY_TRACKING_RESERVE_M
+        + latency_reserve
+        + RECOVERY_MARGIN_RESERVE_M
+    )
 
 
 def stamp_s(stamp):
@@ -60,7 +82,9 @@ class SITLSupervisor(Node):
         super().__init__("impact_supervisor")
         for key, value in {"session_id": "", "strategy": "recovery", "calibration_file": "",
                            "goal": [12., 0., 2.], "speed_limit": 0.65,
-                           "event_file": "", "margin_reserve": 0.10}.items():
+                           "event_file": "", "margin_reserve": 0.10,
+                           "recovery_information_visibility_radius_m":
+                               RECOVERY_INFORMATION_VISIBILITY_RADIUS_M}.items():
             self.declare_parameter(key, value)
         self.session = self.get_parameter("session_id").value
         if not self.session:
@@ -76,6 +100,18 @@ class SITLSupervisor(Node):
         self.strategy = self.get_parameter("strategy").value
         self.goal = np.array(self.get_parameter("goal").value, float)
         self.limit = float(self.get_parameter("speed_limit").value)
+        self.recovery_information_visibility_radius = float(
+            self.get_parameter("recovery_information_visibility_radius_m").value
+        )
+        if (
+            not math.isfinite(self.recovery_information_visibility_radius)
+            or self.recovery_information_visibility_radius
+            <= minimum_recovery_information_radius_m()
+        ):
+            raise ValueError(
+                "recovery information visibility radius cannot admit a surface "
+                "outside the fixed safety and margin reserves"
+            )
         self.cycle = RecoveryCycle()
         self.odom = self.cloud = self.integrity = self.information = None
         self.received = {}
@@ -254,15 +290,21 @@ class SITLSupervisor(Node):
                 continue
             try:
                 alert = compute_alert_limit(candidate.positions, _cloud_xyz(self.cloud),
-                    speed_mps=0.3, latency_p99_s=0.15, maximum_acceleration_mps2=1.,
-                    body_radius_m=0.35, base_reserve_m=0.10, tracking_reserve_m=0.10)
+                    speed_mps=RECOVERY_SPEED_MPS,
+                    latency_p99_s=RECOVERY_LATENCY_P99_S,
+                    maximum_acceleration_mps2=1., body_radius_m=RECOVERY_BODY_RADIUS_M,
+                    base_reserve_m=RECOVERY_BASE_RESERVE_M,
+                    tracking_reserve_m=RECOVERY_TRACKING_RESERVE_M)
                 profile = build_information_profile(candidate.positions,
                     np.array([xyz(p) for p in info.positions]), np.array([xyz(p) for p in info.normals]),
                     np.array(info.static_confidence), np.array(info.geometry_quality), np.array(info.last_seen_s),
-                    now=self.now_s(), visibility_radius=0.55, age_time_constant=10., information_scale=2500.)
+                    now=self.now_s(),
+                    visibility_radius=self.recovery_information_visibility_radius,
+                    age_time_constant=10., information_scale=2500.)
                 forecast = evaluate_candidate(CandidateForecast(candidate, alert.alert_limits,
                     alert.obstacle_directions, profile), np.array(self.integrity.integrity_covariance).reshape(3,3),
-                    k_alpha=self.k, margin_reserve=0.10, baseline_duration=3.,
+                    k_alpha=self.k, margin_reserve=RECOVERY_MARGIN_RESERVE_M,
+                    baseline_duration=3.,
                     lambda_energy=0.25, lambda_distance=1., minimum_prediction_variance=1e-5)
                 # Future improvement only ranks actions whose rough geometry is feasible.
                 if not forecast.feasible:
@@ -277,7 +319,11 @@ class SITLSupervisor(Node):
             except (ValueError, np.linalg.LinAlgError):
                 continue
         output.sort(key=lambda item: (item[0], item[1]))
-        self.event("RECOVERY_FORECAST", candidates=[dict(name=x[1], cost=x[0], predicted_margin=x[4]) for x in output])
+        self.event(
+            "RECOVERY_FORECAST",
+            information_visibility_radius_m=self.recovery_information_visibility_radius,
+            candidates=[dict(name=x[1], cost=x[0], predicted_margin=x[4]) for x in output],
+        )
         return [(x[1], x[2], x[3]) for x in output]
 
     def tick(self):

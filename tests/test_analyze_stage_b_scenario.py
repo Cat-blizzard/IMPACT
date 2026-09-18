@@ -4,7 +4,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from analyze_stage_b_scenario import _axis, static_observability
+from analyze_stage_b_scenario import _axis, classify_hypothesis, static_observability
 
 
 def scenario(boxes):
@@ -42,3 +42,25 @@ def test_static_observability_accepts_distant_caps_and_ceiling():
        vertical_max_rad=math.radians(52))
     assert not result["longitudinal_cap_visible_from_route"]
     assert result["ceiling_present"]
+
+
+def test_smoke_geometry_is_partial_support_not_mission_contradiction():
+    result = classify_hypothesis("unrecoverable", {
+        "certifications": 0,
+        "certifications_rejected": 0,
+        "recovery_forecasts": 0,
+    }, "x")
+    assert result["overall"] == "PARTIALLY_SUPPORTED"
+    assert result["localization_condition"] == "SUPPORTED"
+    assert result["mission_condition"] == "NOT_EVALUATED"
+    assert result["checks"]["mission_certification_rejected"] is None
+
+
+def test_mission_evidence_can_contradict_scenario():
+    result = classify_hypothesis("unrecoverable", {
+        "certifications": 3,
+        "certifications_rejected": 0,
+        "recovery_forecasts": 0,
+    }, "x")
+    assert result["overall"] == "CONTRADICTED"
+    assert result["mission_condition"] == "CONTRADICTED"
