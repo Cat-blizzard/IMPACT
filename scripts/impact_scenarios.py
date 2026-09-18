@@ -26,7 +26,11 @@ def scenario_geometry(name, seed):
         # route-wide anchor, recoverable an entry-only anchor through x=5 m,
         # and unrecoverable no longitudinal cap anywhere on the route.
         dict(name="end_wall", center=[100, 0, 2], size=[0.2, 4.4, 4.2]),
-        dict(name="start_wall", center=[start_wall_x, 0, 2], size=[0.2, 4.4, 4.2]),
+        # At the recoverable 35 m placement, the original 4.2 m wall yielded
+        # fewer than 110 returns per scan during takeoff. Extend only its
+        # vertical aperture so the longitudinal anchor is measurable without
+        # changing where it leaves the 40 m sensor range.
+        dict(name="start_wall", center=[start_wall_x, 0, 5], size=[0.2, 4.4, 10.0]),
     ]
     xs = (2., 5., 8., 11., 14.) if name == "normal" else (5., 6.) if name == "recoverable" else ()
     for i, x in enumerate(xs):
@@ -43,7 +47,7 @@ def scenario_geometry(name, seed):
         "recoverable": [0.0, 5.0],
         "unrecoverable": None,
     }[name]
-    return dict(schema_version=4, scenario=name, seed=seed, boxes=boxes,
+    return dict(schema_version=5, scenario=name, seed=seed, boxes=boxes,
                 goal_lio_m=[12.,0.,2.], start_world_m=[0.,0.,.195], start_yaw=0.,
                 sensor_observability_design={
                     "lidar_range_m": 40.0,
@@ -51,6 +55,7 @@ def scenario_geometry(name, seed):
                     "longitudinal_caps_outside_range": name == "unrecoverable",
                     "start_anchor_policy": anchor_policy,
                     "start_anchor_visible_route_x_m": anchor_interval,
+                    "start_anchor_height_m": 10.0,
                     "ceiling_supplies_vertical_plane": True,
                     "ceiling_bottom_z_m": 10.0,
                     "certified_flight_max_z_m": 2.9,

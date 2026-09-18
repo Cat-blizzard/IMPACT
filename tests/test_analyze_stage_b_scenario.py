@@ -30,6 +30,8 @@ def test_static_observability_flags_visible_cap_and_missing_ceiling():
     assert result["longitudinal_cap_visible_from_route"]
     cap = result["longitudinal_caps"][0]
     assert cap["visible_route_interval_m"] == [0.0, 12.0]
+    assert cap["height_m"] == 4.0
+    assert math.isclose(cap["surface_area_m2"], 17.6)
     assert cap["covers_route_start"] and cap["covers_route_end"]
     assert not result["ceiling_present"]
     assert result["approximate_floor_intersection_range_m"] > 15.0
@@ -54,13 +56,15 @@ def test_static_observability_accepts_distant_caps_and_ceiling():
 
 def test_static_observability_reports_entry_only_longitudinal_anchor():
     result = static_observability(scenario([
-        {"name": "start_wall", "center": [-35, 0, 2], "size": [0.2, 4.4, 4]},
+        {"name": "start_wall", "center": [-35, 0, 5], "size": [0.2, 4.4, 10]},
         {"name": "end_wall", "center": [100, 0, 2], "size": [0.2, 4.4, 4]},
     ]), lidar_range_m=40.0, vertical_min_rad=math.radians(-7),
        vertical_max_rad=math.radians(52))
     cap = next(item for item in result["longitudinal_caps"]
                if item["name"] == "start_wall")
     assert cap["visible_route_interval_m"] == [0.0, 5.0]
+    assert cap["height_m"] == 10.0
+    assert math.isclose(cap["surface_area_m2"], 44.0)
     assert cap["covers_route_start"]
     assert not cap["covers_route_end"]
 

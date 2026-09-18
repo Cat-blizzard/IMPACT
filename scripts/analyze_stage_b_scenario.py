@@ -59,6 +59,9 @@ def static_observability(scenario: dict, *, lidar_range_m: float,
             visible_interval = ([float(visible_low), float(visible_high)]
                                 if visible_low <= visible_high else None)
             caps.append({"name": box["name"], "minimum_path_distance_m": float(distance),
+                         "width_m": float(size[1]),
+                         "height_m": float(size[2]),
+                         "surface_area_m2": float(size[1] * size[2]),
                          "within_lidar_range": visible_interval is not None,
                          "visible_route_interval_m": visible_interval,
                          "covers_route_start": bool(visible_interval is not None
