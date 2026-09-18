@@ -314,6 +314,7 @@ def classify_outcome(exit_code, mission, evaluation, dataflash_termination=None)
     success = (completed and mission.get("status") == "PASS"
                and mission.get("task_success") is True
                and evaluation.get("status") == "PASS"
+               and evaluation.get("checks", {}).get("actual_goal_reached") is True
                and evaluation.get("collision_events") == 0)
     return dict(status="PASS" if success else "FAIL", completed_record=completed)
 
@@ -702,6 +703,8 @@ def stage_a(args):
         "not_legacy_p5_gate": mission.get("gate") != "P5_BASELINE_MAP_FRONTIER_EGO",
         "mission_record_present": bool(mission),
         "evaluation_pass": evaluation.get("status") == "PASS",
+        "evaluation_actual_goal_reached": (
+            evaluation.get("checks", {}).get("actual_goal_reached") is True),
         "evaluation_samples": int(evaluation.get("samples", 0)) >= 50,
         "evaluation_collision_free": int(evaluation.get("collision_events", 0)) == 0,
         "termination_record_present": "termination_confirmed" in mission,

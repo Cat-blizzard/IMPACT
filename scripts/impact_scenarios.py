@@ -47,8 +47,9 @@ def scenario_geometry(name, seed):
         "recoverable": [0.0, 5.0],
         "unrecoverable": None,
     }[name]
-    return dict(schema_version=5, scenario=name, seed=seed, boxes=boxes,
-                goal_lio_m=[12.,0.,2.], start_world_m=[0.,0.,.195], start_yaw=0.,
+    return dict(schema_version=6, scenario=name, seed=seed, boxes=boxes,
+                goal_lio_m=[12.,0.,2.], actual_goal_tolerance_m=0.45,
+                start_world_m=[0.,0.,.195], start_yaw=0.,
                 sensor_observability_design={
                     "lidar_range_m": 40.0,
                     "route_x_m": [0.0, 12.0],

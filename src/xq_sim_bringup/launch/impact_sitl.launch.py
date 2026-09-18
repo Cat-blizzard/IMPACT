@@ -15,6 +15,7 @@ def setup(context):
     lio = Path(get_package_share_directory("xq_fast_lio"))
     run = Path(LaunchConfiguration("run_dir").perform(context))
     config = json.loads((run / "run.json").read_text())
+    scenario = json.loads((run / "scenario.json").read_text())
     session, strategy = config["session_id"], config["strategy"]
     parameters = runpy.run_path(str(root / "launch/xq_p5_baseline.launch.py"))["baseline_ego_parameters"]()
     speed = 0.3 if strategy == "conservative" else 0.65
@@ -62,7 +63,8 @@ def setup(context):
              parameters=[{"use_sim_time": True, "traj_server/time_forward": 1., "traj_server/command_frame": "xq_lio_map"}],
              remappings=[("planning/bspline", "/impact/certified_bspline"), ("/position_cmd", "/impact/position_cmd")], output="screen"),
         autonomy("impact_supervisor", dict(session_id=session, strategy=strategy,
-            calibration_file=str(run / "calibration.json"), goal=config["configuration"]["goal_lio_m"], speed_limit=speed,
+            calibration_file=str(run / "calibration.json"), goal=config["configuration"]["goal_lio_m"],
+            goal_tolerance_m=scenario["actual_goal_tolerance_m"], speed_limit=speed,
             event_file=str(run / "events.jsonl"))),
         autonomy("impact_arbiter", dict(session_id=session)),
         autonomy("impact_evaluator", dict(result_dir=str(run), scenario_file=str(run / "scenario.json"))),

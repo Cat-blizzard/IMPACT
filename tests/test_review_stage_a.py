@@ -154,14 +154,18 @@ def test_contract_cannot_cover_unrelated_or_incomplete_flight_evidence(tmp_path,
     assert not impact.authorization_evidence_complete(audit_report, contract)
 
 
-def write_actual_evaluation(root, *, samples=100, collisions=0, clearance=1.):
+def write_actual_evaluation(root, *, samples=100, collisions=0, clearance=1., goal_distance=0.):
     pytest.importorskip("rclpy")
     from xq_autonomy.sitl_evaluator_node import SITLEvaluator
     evaluator = SimpleNamespace(root=root, last_active_sim=10., start_sim=0.,
         samples=samples, collision_samples=collisions, collision_events=collisions,
         hmi=0, dropped_pairs=0, path_length=12., stopped_time=0., stopping_durations=[],
         minimum_clearance=clearance, squared_errors=[0.0001], started_wall=0.,
-        coverage=[True], integrity_violations=0, authorized_samples=1)
+        coverage=[True], integrity_violations=0, authorized_samples=1,
+        truth_goal_world=np.array([12., 0., 2.]),
+        last_truth_position=np.array([12. + goal_distance, 0., 2.]),
+        minimum_truth_goal_distance=goal_distance,
+        final_truth_goal_distance=goal_distance, actual_goal_tolerance=0.45)
     SITLEvaluator.write(evaluator)
     return impact.read_json(root / "evaluation.json")
 
@@ -172,6 +176,22 @@ def write_actual_evaluation(root, *, samples=100, collisions=0, clearance=1.):
 def test_evaluator_emits_actual_geometric_status(tmp_path, samples, collisions, expected):
     report = write_actual_evaluation(tmp_path, samples=samples, collisions=collisions)
     assert report["status"] == expected
+
+
+def test_evaluator_and_runner_reject_reported_goal_when_truth_misses(tmp_path):
+    evaluation = write_actual_evaluation(tmp_path, goal_distance=4.)
+    assert evaluation["status"] == "FAIL"
+    assert evaluation["checks"]["actual_goal_reached"] is False
+    mission = dict(status="PASS", task_success=True, termination_confirmed=True)
+    assert impact.classify_outcome(0, mission, evaluation) == {
+        "status": "FAIL", "completed_record": True}
+
+
+def test_runner_rejects_legacy_evaluation_without_truth_goal_check():
+    mission = dict(status="PASS", task_success=True, termination_confirmed=True)
+    evaluation = dict(status="PASS", samples=100, collision_events=0)
+    assert impact.classify_outcome(0, mission, evaluation) == {
+        "status": "FAIL", "completed_record": True}
 
 
 def test_actual_evaluator_output_still_requires_map_and_execution_evidence(tmp_path, monkeypatch):
@@ -191,6 +211,7 @@ def test_actual_evaluator_output_still_requires_map_and_execution_evidence(tmp_p
         strategy="baseline", seed=1000))
     gate = impact.read_json(run / "stage-a-validation.json")
     assert gate["checks"]["evaluation_pass"]
+    assert gate["checks"]["evaluation_actual_goal_reached"]
     assert gate["failed_checks"] == ["authorized_command_execution_verified", "map_content_verified"]
     assert gate["authorization_audit"]["status"] == "INCOMPLETE"
     assert gate["status"] == "REVIEW_REQUIRED" and result != 0
@@ -249,7 +270,8 @@ def test_runtime_graph_probes_retry_required_endpoint_and_record_identity_contex
 ])
 def test_goal_reached_does_not_override_failed_termination_deadline(mission_status, evaluation_status, expected):
     mission = dict(status=mission_status, task_success=True, termination_confirmed=True)
-    evaluation = dict(status=evaluation_status, samples=100, collision_events=0)
+    evaluation = dict(status=evaluation_status, samples=100, collision_events=0,
+                      checks={"actual_goal_reached": True})
     result = impact.classify_outcome(0, mission, evaluation)
     assert result == dict(status=expected, completed_record=True)
 
@@ -257,7 +279,8 @@ def test_goal_reached_does_not_override_failed_termination_deadline(mission_stat
 def test_flown_mission_requires_independent_dataflash_landing_confirmation():
     mission = dict(status="PASS", task_success=True, termination_confirmed=True,
                    termination=dict(armed_seen=True))
-    evaluation = dict(status="PASS", samples=100, collision_events=0)
+    evaluation = dict(status="PASS", samples=100, collision_events=0,
+                      checks={"actual_goal_reached": True})
     assert impact.classify_outcome(0, mission, evaluation) == dict(
         status="FAIL", completed_record=False)
     assert impact.classify_outcome(0, mission, evaluation, {"confirmed": False}) == dict(
@@ -269,7 +292,8 @@ def test_flown_mission_requires_independent_dataflash_landing_confirmation():
 def test_unconfirmed_termination_cannot_be_completed_outcome():
     result = impact.classify_outcome(0,
         dict(status="PASS", task_success=True, termination_confirmed=False),
-        dict(status="PASS", samples=100, collision_events=0))
+        dict(status="PASS", samples=100, collision_events=0,
+             checks={"actual_goal_reached": True}))
     assert result == dict(status="FAIL", completed_record=False)
 
 
@@ -285,7 +309,8 @@ def test_stage_a_propagates_execution_violations_without_downgrading_to_review(t
     (run / "events.jsonl").write_text(json.dumps(dict(event="CERTIFY", trajectory_id=17, accepted=False)))
     report = dict(status="PASS", completed_record=True,
         mission=dict(gate="P16", task_success=True, termination_confirmed=True),
-        evaluation=dict(status="PASS", samples=100, collision_events=0))
+        evaluation=dict(status="PASS", samples=100, collision_events=0,
+                        checks={"actual_goal_reached": True}))
     monkeypatch.setattr(impact, "experiment", lambda args: (run, report))
     monkeypatch.setattr(impact, "audit_stage_a_authorization", lambda path: dict(status=audit_status))
     result = impact.stage_a(argparse.Namespace(results=str(tmp_path), scenario="normal", strategy="baseline", seed=1000))

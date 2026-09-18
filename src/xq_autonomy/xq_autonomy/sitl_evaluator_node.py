@@ -41,7 +41,14 @@ class SITLEvaluator(Node):
         for key in ("result_dir", "scenario_file"):
             self.declare_parameter(key, "")
         self.root = Path(self.get_parameter("result_dir").value)
-        self.boxes = json.loads(Path(self.get_parameter("scenario_file").value).read_text())["boxes"]
+        scenario = json.loads(Path(self.get_parameter("scenario_file").value).read_text())
+        self.boxes = scenario["boxes"]
+        self.goal_lio = np.asarray(scenario["goal_lio_m"], dtype=float)
+        self.actual_goal_tolerance = float(scenario["actual_goal_tolerance_m"])
+        if self.goal_lio.shape != (3,) or not np.all(np.isfinite(self.goal_lio)):
+            raise ValueError("scenario goal_lio_m must contain three finite values")
+        if not math.isfinite(self.actual_goal_tolerance) or self.actual_goal_tolerance <= 0.:
+            raise ValueError("scenario actual_goal_tolerance_m must be finite and positive")
         self.truth = deque(maxlen=300)
         self.transform = None
         self.status_data = {}
@@ -53,6 +60,10 @@ class SITLEvaluator(Node):
         self.samples = self.collision_samples = self.collision_events = self.hmi = 0
         self.was_collision = False
         self.minimum_clearance = math.inf
+        self.truth_goal_world = None
+        self.last_truth_position = None
+        self.minimum_truth_goal_distance = math.inf
+        self.final_truth_goal_distance = None
         self.previous = None
         self.path_length = self.stopped_time = 0.
         self.started_wall = time.monotonic()
@@ -93,12 +104,17 @@ class SITLEvaluator(Node):
             try:
                 r = rotation(truth.pose.pose.orientation) @ rotation(msg.pose.pose.orientation).T
                 self.transform = r, gt-r@estimate
+                self.truth_goal_world = r@self.goal_lio+self.transform[1]
             except ValueError:
                 return
         if self.phase != "ACTIVE":
             self.previous = None
             return
         r, t = self.transform
+        goal_distance = float(np.linalg.norm(gt-self.truth_goal_world))
+        self.last_truth_position = gt.copy()
+        self.minimum_truth_goal_distance = min(self.minimum_truth_goal_distance, goal_distance)
+        self.final_truth_goal_distance = goal_distance
         error = float(np.linalg.norm(r@estimate+t-gt))
         if not math.isfinite(error):
             return
@@ -150,6 +166,7 @@ class SITLEvaluator(Node):
             margin=state.get("margin") if state_fresh else None,
             authorized=state.get("authorized") if state_fresh else None,
             projected_error_m=projected_error,
+            truth_goal_distance_m=goal_distance,
             truth_evaluation_only=True)
         if collision and state_fresh and state.get("authorized"):
             self.hmi += 1
@@ -157,7 +174,11 @@ class SITLEvaluator(Node):
 
     def write(self):
         elapsed = self.last_active_sim-self.start_sim if self.last_active_sim is not None else 0.
-        data = dict(schema_version=1, validation="SIMULATED", samples=self.samples,
+        actual_goal_reached = bool(
+            self.samples > 0 and self.final_truth_goal_distance is not None
+            and self.final_truth_goal_distance <= self.actual_goal_tolerance
+        )
+        data = dict(schema_version=2, validation="SIMULATED", samples=self.samples,
             collision_samples=self.collision_samples, collision_events=self.collision_events,
             authorized_collision_samples=self.hmi, matched_pose_tolerance_s=0.05,
             dropped_pose_pairs=self.dropped_pairs, path_length_m=self.path_length,
@@ -172,13 +193,21 @@ class SITLEvaluator(Node):
             pl_coverage_note="Current error projected onto the reported critical trajectory direction; not whole-mission coverage",
             integrity_violation_samples=self.integrity_violations,
             availability=self.authorized_samples/len(self.coverage) if self.coverage else None,
+            truth_goal_world_m=(self.truth_goal_world.tolist()
+                                if self.truth_goal_world is not None else None),
+            final_truth_position_m=(self.last_truth_position.tolist()
+                                    if self.last_truth_position is not None else None),
+            minimum_truth_goal_distance_m=(self.minimum_truth_goal_distance
+                                           if self.samples else None),
+            final_truth_goal_distance_m=self.final_truth_goal_distance,
+            actual_goal_tolerance_m=self.actual_goal_tolerance,
             independent_geometry=True, fixed_initial_pose_alignment=True)
-        # This status describes independent geometric evaluation, not mission success.
         data["checks"] = {
             "sufficient_samples": self.samples >= 50,
             "collision_free": self.collision_events == 0 and self.collision_samples == 0,
             "finite_metrics": self.samples > 0 and all(math.isfinite(data[key]) for key in
                 ("minimum_truth_clearance_m", "ate_rms_m", "path_length_m")),
+            "actual_goal_reached": actual_goal_reached,
         }
         data["status"] = ("PASS" if all(data["checks"].values()) else
                           "IN_PROGRESS" if self.samples < 50 else "FAIL")

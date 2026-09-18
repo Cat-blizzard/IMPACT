@@ -82,6 +82,7 @@ class SITLSupervisor(Node):
         super().__init__("impact_supervisor")
         for key, value in {"session_id": "", "strategy": "recovery", "calibration_file": "",
                            "goal": [12., 0., 2.], "speed_limit": 0.65,
+                           "goal_tolerance_m": 0.45,
                            "event_file": "", "margin_reserve": 0.10,
                            "recovery_information_visibility_radius_m":
                                RECOVERY_INFORMATION_VISIBILITY_RADIUS_M}.items():
@@ -99,6 +100,9 @@ class SITLSupervisor(Node):
         self.calibration_sha = hashlib.sha256(payload).hexdigest()
         self.strategy = self.get_parameter("strategy").value
         self.goal = np.array(self.get_parameter("goal").value, float)
+        self.goal_tolerance = float(self.get_parameter("goal_tolerance_m").value)
+        if not math.isfinite(self.goal_tolerance) or self.goal_tolerance <= 0.:
+            raise ValueError("goal_tolerance_m must be finite and positive")
         self.limit = float(self.get_parameter("speed_limit").value)
         self.recovery_information_visibility_radius = float(
             self.get_parameter("recovery_information_visibility_radius_m").value
@@ -389,7 +393,7 @@ class SITLSupervisor(Node):
                         self.last_recovery_sim = now
         position = xyz(self.odom.pose.pose.position)
         speed = float(np.linalg.norm(xyz(self.odom.twist.twist.linear)))
-        if np.linalg.norm(position - self.goal) < 0.45 and speed < 0.15:
+        if np.linalg.norm(position - self.goal) < self.goal_tolerance and speed < 0.15:
             self.completed = True
             self.revoke("GOAL_REACHED")
         elif self.cycle.intent != "mission" and self.cycle.phase == "EXECUTING" and np.linalg.norm(position-self.target) < 0.2 and speed < 0.15:
