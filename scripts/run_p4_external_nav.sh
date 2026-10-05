@@ -167,7 +167,7 @@ egl_terminate_guard=$([[ "${use_egl_terminate_guard}" == true ]] && echo "${egl_
 build_manifest=${build_manifest}
 mavros_namespace=/uav1/mavros
 external_nav_topic=/uav1/mavros/odometry/out
-gps_disabled=GPS_TYPE:0,SIM_GPS_DISABLE:1
+gps_disabled=GPS1_TYPE:0,GPS2_TYPE:0,SIM_GPS_DISABLE:1
 sitl_runtime_dir=${run_dir}/sitl_runtime
 EOF
 
@@ -243,7 +243,8 @@ stop_groups() {
   for index in "${!pids[@]}"; do
     pid="${pids[index]}"
     if group_running "${pid}"; then initial_alive+=(true); else initial_alive+=(false); fi
-    if [[ "${labels[index]}" == sitl || "${labels[index]}" == gazebo ]]; then
+    if [[ "${labels[index]}" == sitl || "${labels[index]}" == gazebo ||
+          "${labels[index]}" == mavros ]]; then
       signals+=(TERM)
     else
       signals+=(INT)
@@ -664,9 +665,18 @@ start_group mission "${run_dir}/mission.log" \
 
 # The task has a pre-arm health phase, leaving time to prove that exactly the
 # bound P4 node owns the command topic before any ARM request can be accepted.
-sleep 1
-timeout 15 ros2 node list --no-daemon >"${run_dir}/ros-nodes-with-mission.txt" 2>&1
-[[ "$(grep -c '^/xq_p4_mission$' "${run_dir}/ros-nodes-with-mission.txt")" == 1 ]] || {
+# Poll the graph because Python entrypoint startup can exceed one second on a
+# cold install; a fixed sleep caused false ownership failures before flight.
+mission_node_deadline=$((SECONDS + 15))
+mission_node_count=0
+while ((SECONDS < mission_node_deadline)); do
+  timeout 3 ros2 node list --no-daemon >"${run_dir}/ros-nodes-with-mission.txt" 2>&1 || true
+  mission_node_count="$(grep -c '^/xq_p4_mission$' "${run_dir}/ros-nodes-with-mission.txt" || true)"
+  [[ "${mission_node_count}" == 1 ]] && break
+  assert_core_alive
+  sleep 0.5
+done
+[[ "${mission_node_count}" == 1 ]] || {
   echo "Expected exactly one xq_p4_mission node." >&2; exit 7;
 }
 graph_probe /uav1/mavros/setpoint_position/local "${run_dir}/p4-setpoint-graph.txt"

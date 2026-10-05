@@ -123,7 +123,7 @@ def test_termination_has_one_bounded_budget_after_task_timeout(p4, phase):
 
 
 @pytest.mark.parametrize("mode, expected_phase, expected_commands", [
-    ("GUIDED", "LAND", ["land"]), ("LAND", "FAILSAFE_WAIT", []),
+    ("GUIDED", "LAND", ["land"]), ("LAND", "LAND", ["land"]),
 ])
 def test_fresh_armed_state_resumes_only_missing_landing(p4, mode, expected_phase, expected_commands):
     node, clock = p4

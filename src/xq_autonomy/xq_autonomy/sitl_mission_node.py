@@ -137,6 +137,14 @@ class SITLMission(P4MissionNode):
                 reasons.append("fcu_disarmed_during_task")
             if str(self.fcu_state.mode).upper() != "GUIDED":
                 reasons.append("fcu_not_guided")
+            # The supervisor owns trajectory certification and execution
+            # progress.  Once it fail-closes, terminate the task immediately;
+            # waiting for the generic task timeout would leave an active FCU
+            # mode running after the controller has withdrawn authorization.
+            if self.task_status.get("fail_closed") is True:
+                fault = self.task_status.get("execution_fault") or {}
+                reason = str(fault.get("reason") or "EXECUTION_FAIL_CLOSED")
+                reasons.append(f"supervisor:{reason}")
             if reasons:
                 self._flight_health_loss({**snapshot, "reasons": reasons})
                 return

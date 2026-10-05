@@ -172,6 +172,20 @@ def test_land_ack_does_not_send_duplicate_command(mission):
     assert node.phase == "DESCEND" and not commands
 
 
+def test_failsafe_wait_reissues_land_when_fcu_already_in_land(mission):
+    node, clock, _, commands = mission
+    node.phase = "FAILSAFE_WAIT"
+    node.termination_started = clock.wall
+    node.task_failure_reason = "flight health lost: fcu:ekf failsafe"
+    node.fcu_state.mode = "LAND"
+    node.fcu_state.armed = True
+    node.fcu_state_last_wall = clock.wall
+    node._publish_origin = lambda: None
+    node._tick()
+    assert node.phase == "LAND"
+    assert "FCU already in LAND" in node.events[-1]["detail"]
+
+
 def test_clock_reset_during_descent_cannot_restore_task_success(mission):
     node, clock, params, _ = mission
     node.phase = "DESCEND"

@@ -41,7 +41,14 @@ namespace ego_planner
     bspline_optimizer_->setParam(node);
     bspline_optimizer_->setEnvironment(grid_map_, obj_predictor_);
     bspline_optimizer_->a_star_.reset(new AStar);
-    bspline_optimizer_->a_star_->initGridMap(grid_map_, Eigen::Vector3i(100, 100, 100));
+    // IMPACT's goal can be 12 m ahead of the current local odometry origin.
+    // The old 100-cell pool (and the earlier 160-cell pool) had only a 5 m
+    // / 8 m half-width at the 0.1 m resolution, so A* clipped the goal and
+    // EGO published a short, zero-speed terminal spline. Keep the lateral and
+    // vertical pools bounded to the map envelope while giving the longitudinal
+    // axis a 16 m half-width. This avoids the repeated Coord2Index/AstarSearch
+    // failures without allocating a cubic 320^3 node pool.
+    bspline_optimizer_->a_star_->initGridMap(grid_map_, Eigen::Vector3i(320, 160, 96));
 
     visualization_ = vis;
   }
@@ -71,15 +78,21 @@ namespace ego_planner
     double ts = (start_pt - local_target_pt).norm() > 0.1 ? pp_.ctrl_pt_dist / pp_.max_vel_ * 1.5 : pp_.ctrl_pt_dist / pp_.max_vel_ * 5; // pp_.ctrl_pt_dist / pp_.max_vel_ is too tense, and will surely exceed the acc/vel limits
     vector<Eigen::Vector3d> point_set, start_end_derivatives;
     static bool flag_first_call = true, flag_force_polynomial = false;
+    // Replanning from a stale spline can amplify its boundary acceleration
+    // after repeated recovery cycles. Rebuild from live odometry and target
+    // on every request; obstacle avoidance still runs through A*/rebound.
+    constexpr bool force_live_polynomial_replan = true;
     bool flag_regenerate = false;
     do
     {
       point_set.clear();
       start_end_derivatives.clear();
       flag_regenerate = false;
+      const bool used_previous_trajectory =
+          !force_live_polynomial_replan && !flag_first_call && !flag_polyInit && !flag_force_polynomial;
 
       // 这里如果正常进入if（通常为初次生成），则do部分只进行一次，即只清空一次点集；若进入else则有可能对异常情况重置flag_regenerate并再do一次
-      if (flag_first_call || flag_polyInit || flag_force_polynomial /*|| ( start_pt - local_target_pt ).norm() < 1.0*/) // Initial path generated from a min-snap traj by order.
+      if (force_live_polynomial_replan || flag_first_call || flag_polyInit || flag_force_polynomial /*|| ( start_pt - local_target_pt ).norm() < 1.0*/) // Initial path generated from a min-snap traj by order.
       {
         flag_first_call = false;
         flag_force_polynomial = false;
@@ -215,11 +228,92 @@ namespace ego_planner
           flag_regenerate = true;
         }
       }
+
+      // A stale/replanned trajectory can carry an invalid derivative or a
+      // control point outside the certified flight envelope.  Rebuild from
+      // the current odometry and target instead of passing those values to
+      // the A* segment search (which otherwise reports negative-z indices).
+      if (used_previous_trajectory)
+      {
+        const double velocity_limit = std::max(1.0, 2.0 * pp_.max_vel_);
+        const double acceleration_limit = std::max(2.0, 2.0 * pp_.max_acc_);
+        bool derivatives_valid = true;
+        for (const auto &derivative : start_end_derivatives)
+        {
+          derivatives_valid = derivatives_valid && derivative.allFinite();
+        }
+        derivatives_valid = derivatives_valid
+            && start_end_derivatives[0].norm() <= velocity_limit
+            && start_end_derivatives[1].norm() <= velocity_limit
+            && start_end_derivatives[2].norm() <= acceleration_limit
+            && start_end_derivatives[3].norm() <= acceleration_limit;
+        bool points_valid = !point_set.empty();
+        for (const auto &point : point_set)
+        {
+          points_valid = points_valid && point.allFinite()
+              && point(2) >= -0.5 && point(2) <= 4.0;
+        }
+        if (!derivatives_valid || !points_valid)
+        {
+          RCLCPP_WARN(node_->get_logger(),
+              "rejecting invalid previous trajectory seed; regenerating polynomial");
+          flag_force_polynomial = true;
+          flag_regenerate = true;
+        }
+      }
     } while (flag_regenerate);
 
     // 将轨迹变为B样条轨迹
     Eigen::MatrixXd ctrl_pts, ctrl_pts_temp;
     UniformBspline::parameterizeToBspline(ts, point_set, start_end_derivatives, ctrl_pts);
+
+    // The parameterization solve can amplify a bad boundary derivative. Keep
+    // such a result out of the optimizer and out of A*; the supervisor will
+    // revoke authorization and land if no valid replacement is available.
+    // Keep the trajectory actually handed to the optimizer inside the same
+    // certified altitude envelope used by rebound/A*.  A finite polynomial
+    // seed can overshoot briefly when its boundary derivative is stale; that
+    // numerical excursion must not turn into an avoidable planning stall.
+    // Non-finite values remain a hard failure because they cannot be repaired
+    // safely.
+    bool control_points_valid = ctrl_pts.allFinite();
+    bool clamped_altitude = false;
+    if (control_points_valid)
+    {
+      constexpr double FLIGHT_MIN_Z = 0.05;
+      constexpr double FLIGHT_MAX_Z = 2.9;
+      for (Eigen::Index i = 0; i < ctrl_pts.cols(); ++i)
+      {
+        double &z = ctrl_pts(2, i);
+        if (!std::isfinite(z))
+        {
+          control_points_valid = false;
+          break;
+        }
+        if (z < FLIGHT_MIN_Z)
+        {
+          z = FLIGHT_MIN_Z;
+          clamped_altitude = true;
+        }
+        else if (z > FLIGHT_MAX_Z)
+        {
+          z = FLIGHT_MAX_Z;
+          clamped_altitude = true;
+        }
+      }
+    }
+    if (clamped_altitude)
+    {
+      RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000,
+          "projected finite B-spline control points into altitude envelope");
+    }
+    if (!control_points_valid)
+    {
+      RCLCPP_ERROR(node_->get_logger(),
+          "rejecting B-spline with control points outside finite flight envelope");
+      continous_failures_count_++;
+      return false;
+    }
 
     vector<std::pair<int, int>> segments;
     segments = bspline_optimizer_->initControlPoints(ctrl_pts, true);

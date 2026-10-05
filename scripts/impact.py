@@ -458,7 +458,13 @@ def batch(args):
 
 
 def validate_server(args):
-    """Serial stage gates: original P5, ordinary closed loop, then all four arms."""
+    """Run the current server protocol with GPU P4 as the entry gate.
+
+    The historical Frontier/P5 run is retained as an independent diagnostic.  It
+    must never block the current target-navigation validation, and its result is
+    recorded separately so that a P5 failure cannot be mistaken for a P4/Stage A
+    failure (or vice versa).
+    """
     if args.profile != "server_gpu":
         raise RuntimeError("formal server validation requires server_gpu")
     root = Path(args.results).resolve()
@@ -466,49 +472,144 @@ def validate_server(args):
     marker = root/"server-validation.json"
     marker.unlink(missing_ok=True)
     frozen = source_hash()
+    frozen_external = external_fingerprint()
+    # run_p5_baseline.sh deliberately confines its artifacts to the historical
+    # baseline_v1 namespace.  Keep that namespace while still linking the run
+    # from the current validation marker as an independent diagnostic.
     legacy = ROOT/"experiments/results/baseline_v1"/("p5_server_"+uuid.uuid4().hex[:8])
     legacy.mkdir(parents=True)
-    passed = []
+    evidence = {}
+    legacy_report = {
+        "status": "NOT_RUN", "run": str(legacy),
+        "source_sha256": frozen, "external": frozen_external,
+        "independent": True,
+        "note": "Historical Frontier/P5 diagnostic; never a current server gate.",
+    }
     try:
         preflight=doctor(args.profile, runtime=True)
-        write_json(legacy/"doctor.json",preflight)
+        write_json(root/"doctor.json",preflight)
         if not preflight["ready"]: raise RuntimeError("server runtime doctor failed")
         manifest=read_json(build_root()/"build-manifest.json")
         if manifest["source_sha256"] != frozen or manifest["build_kind"] != "full":
             raise RuntimeError("current full build required")
-        env=runtime_env(args.profile,legacy)
-        env.update(IMPACT_PROFILE=args.profile,IMPACT_BUILD_MANIFEST=str(build_root()/"build-manifest.json"))
-        with slot_lock(), (legacy/"launcher.log").open("w") as log:
-            code=subprocess.call(["bash",str(ROOT/"scripts/run_p5_baseline.sh"),"--run-dir",str(legacy)],env=env,stdout=log,stderr=subprocess.STDOUT)
-        if code: raise RuntimeError(f"original P5 failed: {legacy}")
-        passed.append(str(legacy))
-        cases=[("normal","baseline"),("normal","recovery")]+[("recoverable",s) for s in config()["strategies"]]
-        for scenario,strategy in cases:
-            args.scenario,args.strategy,args.seed=scenario,strategy,1000
-            args.run_kind="validation"
-            run,report=experiment(args)
-            if not report.get("completed_record") or (scenario == "normal" and report["status"] != "PASS"):
-                raise RuntimeError(f"stage failed: {run}")
-            if scenario == "recoverable" and strategy == "recovery":
-                events = [json.loads(line) for line in (run/"events.jsonl").read_text().splitlines()
-                          if line.strip()]
-                telemetry = [json.loads(line) for line in (run/"telemetry.jsonl").read_text().splitlines()
-                             if line.strip()]
-                audit = analyze_recovery_causality(events, telemetry, reserve_m=0.10,
-                    estimator_memory_horizon_s=float(
-                        report["configuration"]["integrity_information_memory_horizon_s"]))
-                audit["run"] = str(run.resolve())
-                write_json(run/"recovery-causal-audit.json", audit)
-                if audit["mechanism_status"] != "PASS":
-                    raise RuntimeError(f"recovery mechanism not demonstrated: {run}")
-            passed.append(str(run))
+        build_manifest = build_root()/"build-manifest.json"
+
+        # Keep the old P5 run for diagnosis, but do not turn its known Frontier
+        # completion behavior into a blocker for the current protocol.
+        try:
+            env=runtime_env(args.profile,legacy)
+            env.update(IMPACT_PROFILE=args.profile,IMPACT_BUILD_MANIFEST=str(build_manifest))
+            with slot_lock(), (legacy/"launcher.log").open("w") as log:
+                code=subprocess.call(["bash",str(ROOT/"scripts/run_p5_baseline.sh"),"--run-dir",str(legacy)],
+                                      env=env,stdout=log,stderr=subprocess.STDOUT)
+            legacy_report.update(status="PASS" if code == 0 else "FAIL", launcher_exit_code=code)
+        except (OSError, RuntimeError) as error:
+            legacy_report.update(status="ERROR", reason=str(error))
+        write_json(legacy/"legacy-p5.json", legacy_report)
+        evidence["legacy_p5"] = legacy_report
+
+        # Current GPU smoke gate.
+        smoke_root = root/"smoke"
+        args.results = str(smoke_root)
+        args.scenario,args.strategy,args.seed = "normal","baseline",1000
+        args.run_kind="validation"
+        args.smoke=True
+        smoke_run, smoke_report = experiment(args)
+        evidence["smoke"] = {"run": str(smoke_run), "status": smoke_report.get("status"),
+                              "completed_record": smoke_report.get("completed_record"),
+                              "source_sha256": smoke_report.get("source_sha256")}
+        if smoke_report.get("status") != "PASS" or smoke_report.get("source_sha256") != frozen:
+            raise RuntimeError(f"GPU smoke gate failed: {smoke_run}")
+
+        # Current GPU P4 ExternalNav gate.  The P4 script owns its own artifact
+        # and cleanup validation; this wrapper records and checks its summary.
+        p4_run = ROOT/"experiments/results/external_nav"/("server-validation-"+root.name+"-"+uuid.uuid4().hex[:8])
+        p4_run.parent.mkdir(parents=True, exist_ok=True)
+        p4_env = runtime_env(args.profile,p4_run)
+        p4_env.update(IMPACT_PROFILE=args.profile, IMPACT_BUILD_MANIFEST=str(build_manifest),
+                      IMPACT_INSTALL=str(build_root()/"install"))
+        p4_log = root/"p4-launcher.log"
+        with p4_log.open("w") as log:
+            p4_code = subprocess.call(["bash",str(ROOT/"scripts/run_p4_external_nav.sh"),
+                                       "--profile",args.profile,"--minimum-eval-duration","70",
+                                       "--run-dir",str(p4_run)], env=p4_env,
+                                       stdout=log, stderr=subprocess.STDOUT)
+        p4_summary = read_json(p4_run/"summary.json") if (p4_run/"summary.json").is_file() else {}
+        evidence["p4"] = {"run": str(p4_run), "status": p4_summary.get("status"),
+                           "launcher_exit_code": p4_code,
+                           "summary": str(p4_run/"summary.json")}
+        if p4_code != 0 or p4_summary.get("status") != "PASS":
+            raise RuntimeError(f"GPU P4 gate failed: {p4_run}")
+
+        # Bind the real Stage A flight to a contract produced by this exact
+        # install.  A missing contract otherwise makes an otherwise good flight
+        # silently fail the Stage A authorization check.
+        contract = root/"authorization-runtime-contract.json"
+        contract_cmd = ["bash", "-c",
+            'set -e\nsource /opt/ros/humble/setup.bash\nsource "$1/setup.bash"\n'
+            'exec python3 "$2" --output "$3" --build-manifest "$4"',
+            "impact-authorization-contract", str(build_root()/"install"),
+            str(ROOT/"scripts/impact_ros_contract.py"), str(contract), str(build_manifest)]
+        contract_result = subprocess.run(contract_cmd, capture_output=True, text=True)
+        contract_report = read_json(contract) if contract.is_file() else {}
+        evidence["authorization_contract"] = {"path": str(contract),
+            "status": contract_report.get("status"), "source_sha256": contract_report.get("build",{}).get("source_sha256"),
+            "returncode": contract_result.returncode}
+        if contract_result.returncode != 0 or contract_report.get("status") != "PASS" \
+                or contract_report.get("build",{}).get("source_sha256") != frozen:
+            raise RuntimeError(f"Stage A authorization contract failed: {contract}")
+
+        stage_root = root/"stage-a"
+        args.results = str(stage_root)
+        args.smoke=False
+        args.authorization_contract = str(contract)
+        stage_status = stage_a(args)
+        stage_summary_path = stage_root/"stage-a-summary.json"
+        stage_summary = read_json(stage_summary_path) if stage_summary_path.is_file() else {}
+        stage_entry = stage_summary.get("runs", [])[-1] if stage_summary.get("runs") else {}
+        evidence["stage_a"] = {"summary": str(stage_summary_path), **stage_entry}
+        if stage_status != 0 or stage_entry.get("status") != "PASS":
+            raise RuntimeError(f"Stage A gate failed: {stage_entry.get('run', stage_root)}")
+
+        # The three independent recoverable development runs are a prerequisite
+        # for the formal matrix.  Failed/incomplete retries remain visible in
+        # the directory but cannot satisfy this gate.
+        dev_root = ROOT/"experiments/results/head_gpu_stage_b_dev_group_current"
+        required_seeds = (1000,1001,1002)
+        development = []
+        for seed in required_seeds:
+            candidates = []
+            for path in sorted(dev_root.glob("recoverable-recovery-s1000-*" if seed == 1000 else
+                                          f"recoverable-recovery-s{seed}-*")):
+                record = path/"run.json"
+                if not record.is_file():
+                    continue
+                row = read_json(record)
+                if row.get("source_sha256") != frozen:
+                    continue
+                audit = read_json(path/"recovery-causal-audit.json") if (path/"recovery-causal-audit.json").is_file() else {}
+                if row.get("status") == "PASS" and row.get("completed_record") is True \
+                        and audit.get("mechanism_status") == "PASS":
+                    candidates.append({"run": str(path), "seed": seed, "status": row.get("status"),
+                                       "recovery_audit": str(path/"recovery-causal-audit.json")})
+            if len(candidates) != 1:
+                raise RuntimeError(f"expected one passing recoverable development run for seed {seed}, found {len(candidates)}")
+            development.extend(candidates)
+        evidence["stage_b_development"] = {"root": str(dev_root), "runs": development,
+            "independent_seeds": list(required_seeds)}
+
         if source_hash() != frozen: raise RuntimeError("source changed during validation")
-        write_json(marker,dict(status="PASS",source_sha256=frozen,profile=args.profile,runs=passed,external=external_fingerprint(),
-            note="Infrastructure, normal-task validation and one causal recovery mechanism gate passed. This is development evidence, not a statistical recovery-benefit claim."))
+        if external_fingerprint() != frozen_external: raise RuntimeError("external binaries changed during validation")
+        write_json(marker,dict(status="PASS",source_sha256=frozen,profile=args.profile,
+            external=frozen_external,build_manifest=str(build_manifest),evidence=evidence,
+            note="GPU P4-first validation. Legacy P5 is retained as an independent diagnostic; three recoverable development runs are prerequisite evidence, not a statistical recovery-benefit claim."))
         print(f"Server stages passed: {marker}")
     except (OSError,ValueError,RuntimeError,KeyError) as error:
-        write_json(marker,dict(status="FAIL",source_sha256=frozen,profile=args.profile,runs=passed,reason=str(error)))
-        bundle(legacy)
+        write_json(marker,dict(status="FAIL",source_sha256=frozen,profile=args.profile,
+            external=frozen_external,build_manifest=str(build_root()/"build-manifest.json"),
+            evidence=evidence,reason=str(error)))
+        if legacy.exists():
+            bundle(legacy)
         raise
 
 

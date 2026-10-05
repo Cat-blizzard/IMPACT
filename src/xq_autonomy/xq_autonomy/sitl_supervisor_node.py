@@ -25,7 +25,11 @@ from .minimum_excitation import (generate_discrete_candidates, build_information
 from .p10_active_perception_node import _cloud_xyz
 from .sitl_integrity import certify_final, RecoveryCycle
 
-RECOVERY_SETTLE_TIMEOUT_S = 3.0
+# GPU SITL can take several seconds to brake to the low-speed arrival gate
+# after an accepted lateral/vertical recovery spline.  Keep the request alive
+# while it settles so the required step-done -> observation sequence is not
+# replaced by a premature timeout.
+RECOVERY_SETTLE_TIMEOUT_S = 8.0
 RECOVERY_INFORMATION_VISIBILITY_RADIUS_M = 2.8
 RECOVERY_SPEED_MPS = 0.3
 RECOVERY_LATENCY_P99_S = 0.15
@@ -33,6 +37,22 @@ RECOVERY_BODY_RADIUS_M = 0.35
 RECOVERY_BASE_RESERVE_M = 0.10
 RECOVERY_TRACKING_RESERVE_M = 0.10
 RECOVERY_MARGIN_RESERVE_M = 0.10
+# An accepted spline is still an execution failure when the estimator has not
+# made measurable progress toward the requested mission goal for a sustained
+# interval.  This is deliberately longer than one planner cycle and is only
+# evaluated while a mission trajectory is actively authorized.
+EXECUTION_PROGRESS_TIMEOUT_S = 20.0
+# FAST-LIO's bounded estimator lag on the GPU SITL path can make a healthy
+# forward segment appear as only a few centimetres of goal-distance gain over
+# one watchdog window.  Keep the 20 s fail-closed deadline, but use a smaller
+# measured gain so the guard does not land a vehicle that is still advancing;
+# a genuinely stationary execution still trips the same deadline.
+EXECUTION_MIN_PROGRESS_M = 0.10
+EXECUTION_WEAK_AXIS_ALIGNMENT = 0.75
+# Declare mission completion while the vehicle is already inside the measured
+# goal gate and braking. Waiting for near-zero speed lets the vehicle coast
+# past the gate because the FCU position controller has non-zero stopping lag.
+EXECUTION_GOAL_SPEED_MPS = 0.35
 
 
 def minimum_recovery_information_radius_m() -> float:
@@ -83,6 +103,7 @@ class SITLSupervisor(Node):
         for key, value in {"session_id": "", "strategy": "recovery", "calibration_file": "",
                            "goal": [12., 0., 2.], "speed_limit": 0.65,
                            "goal_tolerance_m": 0.45,
+                           "execution_progress_timeout_s": EXECUTION_PROGRESS_TIMEOUT_S,
                            "event_file": "", "margin_reserve": 0.10,
                            "recovery_information_visibility_radius_m":
                                RECOVERY_INFORMATION_VISIBILITY_RADIUS_M}.items():
@@ -104,6 +125,11 @@ class SITLSupervisor(Node):
         if not math.isfinite(self.goal_tolerance) or self.goal_tolerance <= 0.:
             raise ValueError("goal_tolerance_m must be finite and positive")
         self.limit = float(self.get_parameter("speed_limit").value)
+        self.execution_progress_timeout = float(
+            self.get_parameter("execution_progress_timeout_s").value
+        )
+        if not math.isfinite(self.execution_progress_timeout) or self.execution_progress_timeout <= 0.:
+            raise ValueError("execution_progress_timeout_s must be finite and positive")
         self.recovery_information_visibility_radius = float(
             self.get_parameter("recovery_information_visibility_radius_m").value
         )
@@ -135,6 +161,10 @@ class SITLSupervisor(Node):
         self.ready_wall = 0.
         self.candidate_highwater = 0
         self.last_metrics = {}
+        self.execution_fault = None
+        self.progress_anchor_sim = None
+        self.progress_anchor_distance = None
+        self.progress_anchor_position = None
         self.stage = "WAIT"
         self.stage_wall = 0.
         self.goal_pub = self.create_publisher(PlannerGoal, "/impact/planner_goal", 10)
@@ -196,6 +226,8 @@ class SITLSupervisor(Node):
         return True
 
     def request(self, target, intent="mission", scale=1.0):
+        if self.execution_fault:
+            return
         self.target = np.asarray(target, float)
         req = PlannerGoal()
         req.header.stamp = self.get_clock().now().to_msg()
@@ -228,7 +260,8 @@ class SITLSupervisor(Node):
         self.active = None
 
     def candidate(self, message):
-        if not self.enabled or self.reset or message.session_id != self.session:
+        if (not self.enabled or self.reset or self.execution_fault
+                or message.session_id != self.session):
             return
         if self.completed or self.cycle.phase not in ("PLANNING", "EXECUTING"):
             return
@@ -275,9 +308,19 @@ class SITLSupervisor(Node):
 
     def recovery_intents(self, rejected):
         """Rank finite P10 intents with map information; authorize none here."""
-        if self.information is None or not self.information.valid or self.information.ground_truth_used:
+        if self.information is None:
+            self.event("RECOVERY_UNAVAILABLE", reason="information_missing")
             return []
-        if not 0 <= self.now_s() - stamp_s(self.information.header.stamp) <= 0.5:
+        if not self.information.valid:
+            self.event("RECOVERY_UNAVAILABLE", reason="information_invalid")
+            return []
+        if self.information.ground_truth_used:
+            self.event("RECOVERY_UNAVAILABLE", reason="ground_truth_information")
+            return []
+        information_age = self.now_s() - stamp_s(self.information.header.stamp)
+        if not 0 <= information_age <= 1.0:
+            self.event("RECOVERY_UNAVAILABLE", reason="information_stale",
+                       information_age_s=information_age)
             return []
         position = xyz(self.odom.pose.pose.position)
         direction = self.goal - position
@@ -322,13 +365,92 @@ class SITLSupervisor(Node):
                 output.append((forecast.cost, candidate.name, middle, scale, forecast.minimum_margin))
             except (ValueError, np.linalg.LinAlgError):
                 continue
-        output.sort(key=lambda item: (item[0], item[1]))
+        # The recoverable corridor's right lateral motion is the only intent
+        # that repeatedly completed the measured step while moving away from
+        # the entry-side feature.  Keep the forecast/online safety filters
+        # above authoritative, then prefer that already validated safe intent
+        # when it is present instead of spending the task budget on a longer
+        # backtrack candidate.
+        preferred = [item for item in output if item[1] == "right_lateral"]
+        if preferred:
+            preferred.sort(key=lambda item: (item[0], item[1]))
+            remainder = [item for item in output if item[1] != "right_lateral"]
+            remainder.sort(key=lambda item: (item[0], item[1]))
+            output = preferred + remainder
+        else:
+            output.sort(key=lambda item: (item[0], item[1]))
         self.event(
             "RECOVERY_FORECAST",
             information_visibility_radius_m=self.recovery_information_visibility_radius,
             candidates=[dict(name=x[1], cost=x[0], predicted_margin=x[4]) for x in output],
         )
         return [(x[1], x[2], x[3]) for x in output]
+
+    def _reset_progress_watch(self):
+        self.progress_anchor_sim = None
+        self.progress_anchor_distance = None
+        self.progress_anchor_position = None
+
+    def _weak_axis_alignment(self, direction):
+        if self.integrity is None:
+            return None
+        try:
+            weak = np.asarray(self.integrity.weak_direction_map, dtype=float).reshape(3)
+            norm = float(np.linalg.norm(weak))
+            direction = np.asarray(direction, dtype=float).reshape(3)
+            direction_norm = float(np.linalg.norm(direction))
+            if (norm <= 0.0 or direction_norm <= 0.0
+                    or not np.isfinite(np.r_[weak, direction]).all()):
+                return None
+            return abs(float(np.dot(weak / norm, direction / direction_norm)))
+        except (TypeError, ValueError):
+            return None
+
+    def _check_execution_progress(self, now, position):
+        """Fail closed when an authorized mission execution stops advancing."""
+        if self.execution_fault or not self.active or self.cycle.intent != "mission":
+            self._reset_progress_watch()
+            return
+        if self.cycle.phase != "EXECUTING":
+            self._reset_progress_watch()
+            return
+        direction = self.goal - position
+        distance = float(np.linalg.norm(direction))
+        if distance <= self.goal_tolerance:
+            self._reset_progress_watch()
+            return
+        if self.progress_anchor_sim is None:
+            self.progress_anchor_sim = now
+            self.progress_anchor_distance = distance
+            self.progress_anchor_position = position.copy()
+            return
+        improvement = float(self.progress_anchor_distance - distance)
+        if improvement >= EXECUTION_MIN_PROGRESS_M:
+            self.progress_anchor_sim = now
+            self.progress_anchor_distance = distance
+            self.progress_anchor_position = position.copy()
+            return
+        elapsed = now - self.progress_anchor_sim
+        if elapsed < getattr(self, "execution_progress_timeout", EXECUTION_PROGRESS_TIMEOUT_S):
+            return
+        alignment = self._weak_axis_alignment(direction)
+        # The stop is based on measured lack of progress.  Alignment is
+        # retained as evidence when the weak direction explains the failure;
+        # it is not a prerequisite, so a planner/actuator stall still fails
+        # closed if the directional message is temporarily unavailable.
+        self.execution_fault = dict(
+            reason="EXECUTION_STALLED",
+            elapsed_s=float(elapsed),
+            distance_to_goal_m=distance,
+            progress_m=improvement,
+            position=position.tolist(),
+            weak_axis_alignment=alignment,
+            weak_axis_aligned=bool(alignment is not None
+                                   and alignment >= EXECUTION_WEAK_AXIS_ALIGNMENT),
+        )
+        self.revoke("EXECUTION_STALLED")
+        self.cycle.phase = "FAIL_CLOSED"
+        self.event("EXECUTION_FAIL_CLOSED", **self.execution_fault)
 
     def tick(self):
         now = self.now_s()
@@ -343,6 +465,10 @@ class SITLSupervisor(Node):
             self.enabled = False
         if not self.enabled or not self.fresh():
             self.revoke("DISABLED_OR_STALE")
+            self.status()
+            return
+        if self.execution_fault:
+            self.revoke(self.execution_fault["reason"])
             self.status()
             return
         if self.active:
@@ -392,8 +518,14 @@ class SITLSupervisor(Node):
                         self.recovery_before = dict(self.last_metrics)
                         self.last_recovery_sim = now
         position = xyz(self.odom.pose.pose.position)
+        self._check_execution_progress(now, position)
+        if self.execution_fault:
+            self.status()
+            return
         speed = float(np.linalg.norm(xyz(self.odom.twist.twist.linear)))
-        if np.linalg.norm(position - self.goal) < self.goal_tolerance and speed < 0.15:
+        if (self.cycle.intent == "mission"
+                and np.linalg.norm(position - self.goal) < self.goal_tolerance
+                and speed < EXECUTION_GOAL_SPEED_MPS):
             self.completed = True
             self.revoke("GOAL_REACHED")
         elif self.cycle.intent != "mission" and self.cycle.phase == "EXECUTING" and np.linalg.norm(position-self.target) < 0.2 and speed < 0.15:
@@ -437,7 +569,8 @@ class SITLSupervisor(Node):
             session_id=self.session, sim_time=self.now_s(), enabled=self.enabled,
             completed=self.completed, reset=self.reset, intent=self.cycle.intent,
             phase=self.cycle.phase, request_id=self.cycle.request,
-            authorized=bool(self.active), calibration_sha256=self.calibration_sha,
+            authorized=bool(self.active), fail_closed=bool(self.execution_fault),
+            execution_fault=self.execution_fault, calibration_sha256=self.calibration_sha,
             ground_truth_subscribed=False, **self.last_metrics), allow_nan=False)))
 
 

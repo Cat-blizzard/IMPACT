@@ -483,6 +483,43 @@ namespace ego_planner
   std::vector<std::pair<int, int>> BsplineOptimizer::initControlPoints(Eigen::MatrixXd &init_points, bool flag_first_init /*= true*/)
   {
 
+    // Every call can be reached from the L-BFGS rebound/restart path, where
+    // an intermediate iterate may have escaped far below the floor.  Reject
+    // that iterate before deriving obstacle segments or passing an endpoint
+    // to A*.  The takeoff trajectory legitimately uses control points below
+    // the nominal cruise altitude, so the gate is a small ground clearance,
+    // rather than the cruise envelope used by the supervisor.
+    constexpr double GROUND_CLEARANCE_Z = 0.05;
+    constexpr double FLIGHT_MAX_Z = 4.0;
+    bool clamped_low_altitude = false;
+    for (Eigen::Index i = 0; i < init_points.cols(); ++i)
+    {
+      const double z = init_points(2, i);
+      if (!std::isfinite(z) || z > FLIGHT_MAX_Z)
+      {
+        force_stop_type_ = STOP_FOR_ERROR;
+        RCLCPP_WARN(rclcpp::get_logger("initControlPoints"),
+                    "rejecting out-of-envelope control point z=%.3f at index=%ld",
+                    z, static_cast<long>(i));
+        return {};
+      }
+      if (z < GROUND_CLEARANCE_Z)
+      {
+        // L-BFGS can briefly overshoot below the floor while searching for a
+        // rebound direction.  Project that iterate onto the certified ground
+        // plane before segment detection/A*, instead of turning a recoverable
+        // numerical excursion into a permanent planning failure.
+        init_points(2, i) = GROUND_CLEARANCE_Z;
+        clamped_low_altitude = true;
+      }
+    }
+    if (clamped_low_altitude)
+    {
+      RCLCPP_DEBUG(rclcpp::get_logger("initControlPoints"),
+                   "projected low-altitude control points to z=%.3f before A*",
+                   GROUND_CLEARANCE_Z);
+    }
+
     if (flag_first_init)
     {
       cps_.clearance = dist0_;
@@ -1298,6 +1335,39 @@ namespace ego_planner
   bool BsplineOptimizer::check_collision_and_rebound(void)
   {
 
+    // A transient L-BFGS step can create an invalid altitude before the
+    // feasibility cost is evaluated. Reject it before any A* endpoint is
+    // constructed; negative-z endpoints are outside the certified envelope.
+    constexpr double FLIGHT_MIN_Z = 0.05;
+    constexpr double FLIGHT_MAX_Z = 2.9;
+    // The first/last `order_` points are fixed boundary conditions in EGO;
+    // only interior points are sent through rebound/A* and need the flight
+    // envelope gate.
+    bool clamped_low_altitude = false;
+    for (Eigen::Index i = order_; i < cps_.points.cols() - order_; ++i)
+    {
+      const double z = cps_.points(2, i);
+      if (!std::isfinite(z) || z > FLIGHT_MAX_Z)
+      {
+        force_stop_type_ = STOP_FOR_ERROR;
+        RCLCPP_WARN(rclcpp::get_logger("check_collision_and_rebound"),
+                    "rejecting out-of-envelope control point z=%.3f at index=%ld",
+                    z, static_cast<long>(i));
+        return false;
+      }
+      if (z < FLIGHT_MIN_Z)
+      {
+        cps_.points(2, i) = FLIGHT_MIN_Z;
+        clamped_low_altitude = true;
+      }
+    }
+    if (clamped_low_altitude)
+    {
+      RCLCPP_DEBUG(rclcpp::get_logger("check_collision_and_rebound"),
+                   "projected low-altitude control points to z=%.3f before A*",
+                   FLIGHT_MIN_Z);
+    }
+
     int end_idx = cps_.size - order_;
 
     /*** Check and segment the initial trajectory according to obstacles ***/
@@ -1828,6 +1898,28 @@ namespace ego_planner
     // printf("origin %f %f %f %f\n", f_smoothness, f_distance, f_feasibility, f_combine);
 
     Eigen::MatrixXd grad_3D = lambda1_ * g_smoothness + new_lambda2_ * g_distance + lambda3_ * g_feasibility + new_lambda2_ * g_swarm + lambda2_ * g_terminal;
+    // Keep L-BFGS updates inside the certified altitude envelope. This
+    // penalty prevents the next rebound check from receiving negative-z
+    // control points while preserving a finite, differentiable objective.
+    constexpr double FLIGHT_MIN_Z = 0.05;
+    constexpr double FLIGHT_MAX_Z = 2.9;
+    constexpr double Z_ENVELOPE_WEIGHT = 50.0;
+    for (Eigen::Index i = order_; i < cps_.points.cols() - order_; ++i)
+    {
+      const double z = cps_.points(2, i);
+      if (z < FLIGHT_MIN_Z)
+      {
+        const double error = FLIGHT_MIN_Z - z;
+        f_combine += Z_ENVELOPE_WEIGHT * error * error;
+        grad_3D(2, i) -= 2.0 * Z_ENVELOPE_WEIGHT * error;
+      }
+      else if (z > FLIGHT_MAX_Z)
+      {
+        const double error = z - FLIGHT_MAX_Z;
+        f_combine += Z_ENVELOPE_WEIGHT * error * error;
+        grad_3D(2, i) += 2.0 * Z_ENVELOPE_WEIGHT * error;
+      }
+    }
     // Eigen::MatrixXd grad_3D = lambda1_ * g_smoothness + new_lambda2_ * g_distance + lambda3_ * g_feasibility + new_lambda2_ * g_mov_objs;
     memcpy(grad, grad_3D.data() + 3 * order_, n * sizeof(grad[0]));
   }

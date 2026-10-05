@@ -104,7 +104,10 @@ inline bool AStar::Coord2Index(const Eigen::Vector3d &pt, Eigen::Vector3i &idx) 
 
 	if (idx(0) < 0 || idx(0) >= POOL_SIZE_(0) || idx(1) < 0 || idx(1) >= POOL_SIZE_(1) || idx(2) < 0 || idx(2) >= POOL_SIZE_(2))
 	{
-		RCLCPP_ERROR(rclcpp::get_logger("Coord2Index"), "Ran out of pool, index=%d %d %d, POOL_SIZE=%d %d %d", idx(0), idx(1), idx(2),POOL_SIZE_(0), POOL_SIZE_(1), POOL_SIZE_(2));
+		RCLCPP_ERROR(rclcpp::get_logger("Coord2Index"),
+			"Ran out of pool, point=%.3f %.3f %.3f center=%.3f %.3f %.3f step=%.3f index=%d %d %d, POOL_SIZE=%d %d %d",
+			pt(0), pt(1), pt(2), center_(0), center_(1), center_(2), step_size_,
+			idx(0), idx(1), idx(2), POOL_SIZE_(0), POOL_SIZE_(1), POOL_SIZE_(2));
 		return false;
 	}
 

@@ -179,7 +179,15 @@ def audit_records(records, session_id, *, read_errors=()):
         if status.get("reset") is True:
             reset_latched = True
         if execution["emitted"]:
-            if status.get("phase") not in ("ACTIVE", "HOVER") or status.get("mode") not in ("TRACK", "BRAKE", "STALE_ODOM_HOLD"):
+            # The arbiter deliberately keeps publishing a bounded BRAKE target
+            # while the mission hands control to ArduPilot for termination.
+            # Those outputs carry no authorization and must be auditable as
+            # safe termination evidence rather than being mistaken for an
+            # unauthorized TRACK command.  TRACK remains restricted to ACTIVE
+            # below, where the authorization/command provenance checks apply.
+            allowed_phases = ("ACTIVE", "HOVER", "LAND", "DESCEND", "FAILSAFE_WAIT")
+            allowed_modes = ("TRACK", "BRAKE", "STALE_ODOM_HOLD")
+            if status.get("phase") not in allowed_phases or status.get("mode") not in allowed_modes:
                 violations.append("setpoint emitted outside an allowed control phase/mode")
             stamp = execution.get("setpoint_stamp_ns")
             candidates = outputs.get(stamp, []) if isinstance(stamp, int) else []

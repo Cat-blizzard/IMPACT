@@ -12,7 +12,7 @@ import rclpy
 from geographic_msgs.msg import GeoPointStamped
 from geometry_msgs.msg import PoseStamped
 from mavros_msgs.msg import State, StatusText, SysStatus
-from mavros_msgs.srv import CommandBool, CommandLong, CommandTOL, SetMode, StreamRate
+from mavros_msgs.srv import CommandBool, CommandLong, CommandTOL, ParamGet, ParamPull, SetMode, StreamRate
 from nav_msgs.msg import Odometry
 from rcl_interfaces.msg import ParameterType
 from rcl_interfaces.srv import GetParameters
@@ -89,10 +89,8 @@ class P4MissionNode(Node):
         "EK3_SRC1_VELZ": 6,
         "EK3_SRC1_YAW": 6,
         "VISO_TYPE": 2,
-        "GPS_TYPE": 0,
-        "GPS_TYPE2": 0,
-        "SIM_GPS_DISABLE": 1,
-        "SIM_GPS2_DISABLE": 1,
+        "GPS1_TYPE": 0,
+        "GPS2_TYPE": 0,
     }
 
     def __init__(self) -> None:
@@ -165,6 +163,15 @@ class P4MissionNode(Node):
         self.param_client = self.create_client(
             GetParameters, f"{prefix}/param/get_parameters"
         )
+        # A parameter list can arrive before the MAVROS cache is ready for
+        # individual lookups. Keep one bounded force-pull recovery path for
+        # this startup race; value and expected-value gates remain required.
+        self.param_pull_client = self.create_client(
+            ParamPull, f"{prefix}/param/pull"
+        )
+        self.param_get_client = self.create_client(
+            ParamGet, f"{prefix}/param/get"
+        )
 
         self.fcu_state = State()
         self.have_state = False
@@ -210,6 +217,10 @@ class P4MissionNode(Node):
         self.param_names = list(self.REQUIRED_PARAMS)
         self.param_index = 0
         self.pending_param = None
+        self.pending_param_pull = None
+        self.pending_param_get = None
+        self.param_pull_attempts = 0
+        self.param_get_attempts = 0
         self.last_param_request = 0.0
         self.pending_command = None
         self.phase = "WAIT_FCU"
@@ -449,6 +460,41 @@ class P4MissionNode(Node):
             self._transition("DESCEND", "landing accepted")
 
     def _poll_param(self) -> None:
+        if self.pending_param_get is not None:
+            name, future = self.pending_param_get
+            if not future.done():
+                return
+            self.pending_param_get = None
+            try:
+                response = future.result()
+                if response.success:
+                    value = int(response.value.integer)
+                    expected = self.REQUIRED_PARAMS[name]
+                    if value != expected:
+                        self._finish("FAIL", f"parameter {name}={value}, expected {expected}")
+                        return
+                    self.verified_params[name] = value
+                    self.param_index += 1
+                    self._event("PARAM", f"{name}={value} (compat get)")
+                else:
+                    self._event("PARAM_WAIT", f"{name} compatibility get rejected")
+            except Exception as exc:
+                self._event("PARAM_WAIT", f"{name} compatibility get failed: {exc!r}")
+
+        if self.pending_param_pull is not None:
+            if not self.pending_param_pull.done():
+                return
+            try:
+                response = self.pending_param_pull.result()
+                self._event(
+                    "PARAM_PULL",
+                    f"force pull success={bool(response.success)} count={int(response.param_received)}",
+                )
+            except Exception as exc:
+                self._event("PARAM_PULL", f"force pull exception={exc!r}")
+            self.pending_param_pull = None
+            self.last_param_request = time.monotonic() - 1.0
+
         if self.pending_param is not None:
             name, future = self.pending_param
             if not future.done():
@@ -459,8 +505,27 @@ class P4MissionNode(Node):
             except Exception as exc:
                 self._finish("FAIL", f"parameter {name} query failed: {exc!r}")
                 return
-            if len(response.values) != 1:
+            not_set = len(response.values) == 1 and response.values[0].type == ParameterType.PARAMETER_NOT_SET
+            if len(response.values) != 1 or not_set:
                 self._event("PARAM_WAIT", f"{name} not pulled from FCU yet")
+                if (
+                    not_set and self.param_get_attempts < 1
+                    and self.param_get_client.service_is_ready()
+                ):
+                    request = ParamGet.Request()
+                    request.param_id = name
+                    self.pending_param_get = (name, self.param_get_client.call_async(request))
+                    self.param_get_attempts += 1
+                    self._event("PARAM_GET", f"compatibility get requested for {name}")
+                if (
+                    self.param_pull_attempts < 5
+                    and self.param_pull_client.service_is_ready()
+                ):
+                    request = ParamPull.Request()
+                    request.force_pull = True
+                    self.pending_param_pull = self.param_pull_client.call_async(request)
+                    self.param_pull_attempts += 1
+                    self._event("PARAM_PULL", f"requested after empty {name}")
                 return
             parameter = response.values[0]
             if parameter.type == ParameterType.PARAMETER_INTEGER:
@@ -748,8 +813,8 @@ class P4MissionNode(Node):
             "fcu_status_texts": self.fcu_status_texts,
             "completed_waypoints": self.completed_waypoints,
             "checks": {
-                "gps_disabled": self.verified_params.get("GPS_TYPE") == 0
-                and self.verified_params.get("SIM_GPS_DISABLE") == 1,
+                "gps_disabled": self.verified_params.get("GPS1_TYPE") == 0
+                and self.verified_params.get("GPS2_TYPE") == 0,
                 "ekf_sources_external_nav": all(
                     self.verified_params.get(name) == 6
                     for name in ("EK3_SRC1_POSXY", "EK3_SRC1_VELXY", "EK3_SRC1_POSZ", "EK3_SRC1_VELZ", "EK3_SRC1_YAW")
@@ -836,9 +901,17 @@ class P4MissionNode(Node):
                 self.termination_reason = "FCU disarmed after health loss"
                 self._event("TERMINATION_CONFIRMED", self.termination_reason)
                 self._finish("FAIL", f"{self.task_failure_reason or 'flight health lost'}; termination confirmed")
-            elif (self._fcu_state_is_fresh() and self.fcu_state.connected
-                  and self.fcu_state.armed and str(self.fcu_state.mode).upper() != "LAND"):
-                self._transition("LAND", "fresh FCU state restored; complete failure termination")
+            elif self._fcu_state_is_fresh() and self.fcu_state.connected and self.fcu_state.armed:
+                # ArduPilot may enter LAND itself after an EKF failsafe.  Keep
+                # the mission state machine in LAND even when the FCU already
+                # reports that mode, so the landing service is polled and the
+                # normal DESCEND -> fresh-disarm termination evidence can be
+                # collected.  Waiting in FAILSAFE_WAIT here used to leave an
+                # armed vehicle until the shared termination budget expired.
+                detail = ("fresh FCU state restored; complete failure termination"
+                          if str(self.fcu_state.mode).upper() != "LAND"
+                          else "FCU already in LAND; issue landing command and confirm disarm")
+                self._transition("LAND", detail)
             return
 
         if self.phase == "WAIT_FCU":

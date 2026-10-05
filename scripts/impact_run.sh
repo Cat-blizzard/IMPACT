@@ -8,6 +8,7 @@ set +u
 source /opt/ros/humble/setup.bash
 source "$IMPACT_INSTALL/setup.bash"
 set -u
+egl_terminate_guard="$IMPACT_INSTALL/xq_gz_assets/lib/libimpact_egl_terminate_guard.so"
 python3 "$root/scripts/verify_runtime_build.py" --install "$IMPACT_INSTALL" \
   --manifest "${IMPACT_BUILD_MANIFEST:-$IMPACT_INSTALL/../build-manifest.json}" \
   --output "$run/runtime-build-verification.json"
@@ -84,8 +85,41 @@ cleanup() {
       sleep 1
     done
   done
+  # WSL D3D12 Gazebo must be stopped through its server control service.  A
+  # raw TERM tears down the EGL context on some drivers and reports SIGSEGV
+  # after an otherwise clean flight.  TERM remains a bounded fallback only.
   for index in "${!pids[@]}"; do
-    [[ "${labels[index]}" != sitl && "${cleanup_initial[index]}" == true ]] || continue
+    [[ "${labels[index]}" == gazebo && "${cleanup_initial[index]}" == true ]] || continue
+    pid="${pids[index]}"
+    cleanup_signals[index]=SERVER_CONTROL
+    service_log="$run/gazebo-stop-service.txt"
+    {
+      printf 'requested_at=%s\n' "$(date -Is)"
+      printf 'service=/server_control\nrequest=stop:true\n'
+      if timeout 5 gz service -s /server_control \
+          --reqtype gz.msgs.ServerControl --reptype gz.msgs.Boolean \
+          --timeout 3000 --req 'stop: true'; then
+        service_status=0
+      else
+        service_status=$?
+      fi
+      printf 'exit_code=%s\n' "$service_status"
+    } >"$service_log" 2>&1
+    for _ in {1..20}; do
+      group_running "$pid" || break
+      sleep 0.5
+    done
+    if group_running "$pid"; then
+      cleanup_signals[index]=SERVER_CONTROL_THEN_TERM
+      printf 'fallback_term_at=%s\n' "$(date -Is)" >>"$service_log"
+      kill -TERM -- "-$pid" 2>/dev/null || true
+    else
+      printf 'server_exited_at=%s\n' "$(date -Is)" >>"$service_log"
+    fi
+  done
+  for index in "${!pids[@]}"; do
+    [[ "${labels[index]}" != sitl && "${labels[index]}" != gazebo \
+       && "${cleanup_initial[index]}" == true ]] || continue
     kill -"${cleanup_signals[index]}" "${pids[index]}" 2>/dev/null || true
   done
   for _ in {1..10}; do
@@ -224,7 +258,16 @@ gz_args=(-r -s -v 4 --record-path "$run/gz_record" --record-period 0.05)
 gazebo_seed="$(python3 -c 'import json,sys;print(int(json.load(open(sys.argv[1]))["seed"]))' "$run/run.json")"
 gz_args+=(--seed "$gazebo_seed")
 [[ "$profile" == local_cpu ]] && gz_args+=(--headless-rendering)
-start gazebo gz sim "${gz_args[@]}" "$run/world.sdf"
+if [[ "$profile" == server_gpu ]]; then
+  [[ -f "$egl_terminate_guard" ]] || {
+    echo "WSL D3D12 EGL terminate guard is missing from the bound install." >&2
+    exit 2
+  }
+  start gazebo env IMPACT_EGL_TERMINATE_GUARD=1 LD_PRELOAD="$egl_terminate_guard" \
+    gz sim "${gz_args[@]}" "$run/world.sdf"
+else
+  start gazebo gz sim "${gz_args[@]}" "$run/world.sdf"
+fi
 wait_log sitl "JSON received" 90
 wait_log mavros "Got HEARTBEAT" 60
 phase="start_rosbag"
@@ -305,7 +348,7 @@ PY
   exit 0
 fi
 session="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["session_id"])' "$run/run.json")"
-task_timeout="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["configuration"]["task_timeout_sim_s"])' "$run/run.json")"
+task_timeout="$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); s=json.load(open(sys.argv[2])); print(s.get("task_timeout_sim_s", r["configuration"]["task_timeout_sim_s"]))' "$run/run.json" "$run/scenario.json")"
 mission_timeout_s=700
 termination_timeout_s=90
 start mission ros2 run xq_autonomy impact_mission --ros-args \

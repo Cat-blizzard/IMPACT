@@ -8,9 +8,9 @@ EK3_SRC1_POSZ 6
 EK3_SRC1_VELZ 6
 EK3_SRC1_YAW 6
 VISO_TYPE 2
-GPS_TYPE 0
-GPS_TYPE2 0
-SIM_GPS_DISABLE 1
-SIM_GPS2_DISABLE 1
+# ArduPilot 4.6+ names the two receiver parameters GPS1_TYPE/GPS2_TYPE.
+# The legacy GPS_TYPE/GPS_TYPE2 names are no longer exposed by current SITL.
+GPS1_TYPE 0
+GPS2_TYPE 0
 # Preserve pre-arm IMU and VisualOdom evidence. This changes logging only.
 LOG_DISARMED 1

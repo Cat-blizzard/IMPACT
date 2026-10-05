@@ -127,8 +127,11 @@ class SITLArbiter(Node):
             and self.phase == "ACTIVE" and phase_fresh and fresh)
         execution = dict(emitted=False)
         rejection_reason = None
-        # Takeoff and landing belong to FCU submodes: no competing position targets.
-        if self.phase in ("ACTIVE", "HOVER"):
+        # Takeoff belongs to an FCU submode.  During termination, however, keep
+        # publishing the bounded brake target until LAND/DESCEND has actually
+        # taken over; stopping publication leaves ArduPilot with the last
+        # velocity/acceleration target on some SITL builds.
+        if self.phase in ("ACTIVE", "HOVER", "LAND", "DESCEND", "FAILSAFE_WAIT"):
             cmd = self.command
             if (self.phase == "ACTIVE" and phase_fresh and not self.guard.reset_latched
                 and fresh and cmd and wall-self.auth_wall < 0.5
