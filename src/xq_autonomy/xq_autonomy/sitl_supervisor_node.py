@@ -37,6 +37,11 @@ RECOVERY_BODY_RADIUS_M = 0.35
 RECOVERY_BASE_RESERVE_M = 0.10
 RECOVERY_TRACKING_RESERVE_M = 0.10
 RECOVERY_MARGIN_RESERVE_M = 0.10
+# GPU SITL's information update is quantized at roughly 3e-6 m² per fresh
+# observation.  Keep a positive absolute gain requirement while accepting
+# that measured update granularity; the fixed direction and newer stamp remain
+# mandatory, so clearance changes alone cannot satisfy this gate.
+RECOVERY_MIN_INFORMATION_GAIN_M2 = 1.0e-6
 # An accepted spline is still an execution failure when the estimator has not
 # made measurable progress toward the requested mission goal for a sustained
 # interval.  This is deliberately longer than one planner cycle and is only
@@ -103,6 +108,7 @@ class SITLSupervisor(Node):
         for key, value in {"session_id": "", "strategy": "recovery", "calibration_file": "",
                            "goal": [12., 0., 2.], "speed_limit": 0.65,
                            "goal_tolerance_m": 0.45,
+                           "mission_speed_scale": 1.0,
                            "execution_progress_timeout_s": EXECUTION_PROGRESS_TIMEOUT_S,
                            "event_file": "", "margin_reserve": 0.10,
                            "recovery_information_visibility_radius_m":
@@ -125,6 +131,9 @@ class SITLSupervisor(Node):
         if not math.isfinite(self.goal_tolerance) or self.goal_tolerance <= 0.:
             raise ValueError("goal_tolerance_m must be finite and positive")
         self.limit = float(self.get_parameter("speed_limit").value)
+        self.mission_speed_scale = float(self.get_parameter("mission_speed_scale").value)
+        if not 0.1 <= self.mission_speed_scale <= 1.0:
+            raise ValueError("mission_speed_scale must be between 0.1 and 1.0")
         self.execution_progress_timeout = float(
             self.get_parameter("execution_progress_timeout_s").value
         )
@@ -156,7 +165,9 @@ class SITLSupervisor(Node):
         self.target = self.goal.copy()
         self.recovery_origin = None
         self.recovery_before = None
+        self.recovery_before_information = None
         self.recovery_observed = False
+        self.recovery_information_improved = None
         self.observing_until = None
         self.ready_wall = 0.
         self.candidate_highwater = 0
@@ -406,6 +417,28 @@ class SITLSupervisor(Node):
         except (TypeError, ValueError):
             return None
 
+    def _fixed_information_snapshot(self, direction=None):
+        """Return covariance information on one fixed direction across recovery."""
+        if self.integrity is None:
+            return None
+        try:
+            covariance = np.asarray(self.integrity.integrity_covariance, dtype=float).reshape(3, 3)
+            if direction is None:
+                direction = np.asarray(self.integrity.weak_direction_map, dtype=float).reshape(3)
+            direction = np.asarray(direction, dtype=float).reshape(3)
+            norm = float(np.linalg.norm(direction))
+            if norm <= 0.0 or not np.isfinite(np.r_[covariance.ravel(), direction]).all():
+                return None
+            direction = direction / norm
+            variance = float(direction @ covariance @ direction)
+            if variance < 0.0 or not math.isfinite(variance):
+                return None
+            return dict(direction=direction.tolist(), variance_m2=variance,
+                        protection_m=self.k * math.sqrt(variance),
+                        stamp_s=stamp_s(self.integrity.header.stamp))
+        except (TypeError, ValueError, np.linalg.LinAlgError):
+            return None
+
     def _check_execution_progress(self, now, position):
         """Fail closed when an authorized mission execution stops advancing."""
         if self.execution_fault or not self.active or self.cycle.intent != "mission":
@@ -497,11 +530,25 @@ class SITLSupervisor(Node):
                 if self.cycle.intent == "mission" and self.recovery_observed and self.recovery_before:
                     before, after = self.recovery_before, self.last_metrics
                     da, dp = after["AL"]-before["AL"], after["PL"]-before["PL"]
-                    event = "RECOVERY_CONFIRMED" if da-dp > 0.0 else "RECOVERY_NOT_BENEFICIAL"
+                    information_improved = self.recovery_information_improved
+                    if information_improved is None:
+                        # Unit and replay callers from before the fixed-reference
+                        # field existed remain diagnosable; live runs always set it.
+                        information_improved = True
+                    event = ("RECOVERY_CONFIRMED"
+                             if information_improved and da-dp > 0.0
+                             else "RECOVERY_NOT_BENEFICIAL")
                     self.event(event, before=before, after=after,
                                delta_AL=da, delta_PL=dp, delta_margin=da-dp,
-                               comparison="Each final spline uses its own critical point/direction")
-                    self.cycle.remaining.clear()
+                               information_before=self.recovery_before_information,
+                               information_improved=bool(information_improved),
+                               comparison="Fixed pre-recovery direction and covariance")
+                    if event == "RECOVERY_CONFIRMED":
+                        self.cycle.remaining.clear()
+                    else:
+                        self.recovery_observed = False
+                        self.recovery_information_improved = None
+                        self.cycle.phase = "WAITING"
                     self.recovery_observed = False
             elif not self.active:
                 self.cycle.result(candidate.request_id, False)
@@ -516,6 +563,8 @@ class SITLSupervisor(Node):
                         self.cycle.remaining = self.recovery_intents(candidate)
                         self.recovery_origin = xyz(self.odom.pose.pose.position)
                         self.recovery_before = dict(self.last_metrics)
+                        self.recovery_before_information = self._fixed_information_snapshot()
+                        self.recovery_information_improved = None
                         self.last_recovery_sim = now
         position = xyz(self.odom.pose.pose.position)
         self._check_execution_progress(now, position)
@@ -534,10 +583,24 @@ class SITLSupervisor(Node):
             self.observing_until = now + 0.5
             self.event("RECOVERY_STEP_DONE")
         elif self.cycle.phase == "OBSERVING" and now >= self.observing_until and self.cycle.observed(stamp_s(self.integrity.header.stamp)):
+            after_information = self._fixed_information_snapshot(
+                self.recovery_before_information["direction"]
+                if self.recovery_before_information else None
+            )
+            information_improved = bool(
+                self.recovery_before_information and after_information
+                and after_information["stamp_s"] > self.recovery_before_information["stamp_s"]
+                and after_information["variance_m2"]
+                <= self.recovery_before_information["variance_m2"] - RECOVERY_MIN_INFORMATION_GAIN_M2
+            ) if self.recovery_before_information else None
             self.event("NEW_OBSERVATION", before=self.recovery_before,
-                       observed_PL=float(self.integrity.weak_direction_protection_level))
+                       observed_PL=float(self.integrity.weak_direction_protection_level),
+                       information_before=self.recovery_before_information,
+                       information_after=after_information,
+                       information_improved=information_improved)
             self.recovery_observed = True
-            self.request(self.goal)
+            self.recovery_information_improved = information_improved
+            self.request(self.goal, scale=self.mission_speed_scale)
         elif not self.completed and not self.active and self.cycle.phase != "OBSERVING" and now-self.last_plan_sim > 1:
             settling_recovery = self.cycle.intent != "mission" and self.cycle.phase == "EXECUTING"
             if settling_recovery and now-self.last_plan_sim <= RECOVERY_SETTLE_TIMEOUT_S:
@@ -561,7 +624,7 @@ class SITLSupervisor(Node):
                     else:
                         self.request(target, name, scale)
                 else:
-                    self.request(self.goal)
+                    self.request(self.goal, scale=self.mission_speed_scale)
         self.status()
 
     def status(self):

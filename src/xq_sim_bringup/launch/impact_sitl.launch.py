@@ -26,8 +26,14 @@ def setup(context):
     # integrity rejection.  The normal arm keeps the validated 0.65 m/s
     # envelope; recovery uses the same bounded speed as the conservative arm.
     speed = 0.3 if strategy in ("conservative", "recovery") else 0.65
+    # Keep EGO's polynomial timing numerically well conditioned at the low
+    # safety speed.  Generate from the validated nominal dynamics, then apply
+    # the strategy speed as an explicit time scale at the certified output.
+    planner_speed = 0.65
+    mission_speed_scale = speed / planner_speed
     parameters.update({"fsm/impact_mode": True, "fsm/impact_session": session,
-        "manager/max_vel": speed, "optimization/max_vel": speed, "bspline/limit_vel": speed,
+        "manager/max_vel": planner_speed, "optimization/max_vel": planner_speed,
+        "bspline/limit_vel": planner_speed,
         "grid_map/map_size_x": 70., "grid_map/map_size_y": 16., "fsm/planning_horizon": 3.,
         "manager/planning_horizon": 3.})
     def autonomy(executable, extra=None, sim=True, remappings=None):
@@ -92,6 +98,7 @@ def setup(context):
             # while giving this explicitly bounded recovery arm 45 s to reach
             # its forecast/observation cycle.
             execution_progress_timeout_s=(45.0 if scenario.get("scenario") == "recoverable" else 20.0),
+            mission_speed_scale=mission_speed_scale,
             event_file=str(run / "events.jsonl"))),
         autonomy("impact_arbiter", dict(session_id=session)),
         autonomy("impact_evaluator", dict(result_dir=str(run), scenario_file=str(run / "scenario.json"))),

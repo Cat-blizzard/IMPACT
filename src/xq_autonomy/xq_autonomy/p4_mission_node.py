@@ -115,6 +115,7 @@ class P4MissionNode(Node):
         self.declare_parameter("sys_status_max_age_s", 2.5)
         self.declare_parameter("fcu_state_max_age_s", 2.5)
         self.declare_parameter("arm_confirmation_timeout_s", 8.0)
+        self.declare_parameter("cross_odom_max_delta_m", 5.0)
 
         prefix = str(self.get_parameter("mavros_prefix").value).rstrip("/")
         qos = QoSProfile(
@@ -176,6 +177,7 @@ class P4MissionNode(Node):
         self.fcu_state = State()
         self.have_state = False
         self.armed_seen = False
+        self.disarm_observed_after_termination = False
         self.fcu_state_last_wall = 0.0
         self.fcu_sys_status = SysStatus()
         self.have_sys_status = False
@@ -246,6 +248,9 @@ class P4MissionNode(Node):
         self.have_state = True
         self.armed_seen = self.armed_seen or bool(message.armed)
         self.fcu_state_last_wall = time.monotonic()
+        if (self.phase in self.TERMINATION_PHASES and self.armed_seen
+                and not message.armed):
+            self.disarm_observed_after_termination = True
 
     def _sys_status_cb(self, message: SysStatus) -> None:
         self.fcu_sys_status = message
@@ -585,6 +590,18 @@ class P4MissionNode(Node):
             reasons.append("fcu_odom_stale")
         if self.current_odom_stamp_violations:
             reasons.append("fcu_odom_stamp_nonmonotonic")
+        cross_odom_delta = None
+        if self.have_raw_odom and self.have_odom:
+            cross_odom_delta = math.sqrt(sum(
+                (self.raw_xyz[index] - self.current_xyz[index]) ** 2
+                for index in range(3)
+            ))
+            try:
+                cross_odom_limit = float(self.get_parameter("cross_odom_max_delta_m").value)
+            except (AttributeError, TypeError, ValueError):
+                cross_odom_limit = 5.0
+            if require_prearm and cross_odom_delta > cross_odom_limit:
+                reasons.append("fcu_raw_odom_divergence")
         if not self.have_state or not self.fcu_state.connected:
             reasons.append("fcu_disconnected")
         sys_status_age = now - self.sys_status_last_wall if self.have_sys_status else math.inf
@@ -595,6 +612,8 @@ class P4MissionNode(Node):
             self.fcu_sys_status, VISION_POSITION
         )
         if require_prearm:
+            if not isinstance(self.extnav_status.get("status_sequence"), int):
+                reasons.append("extnav_status_sequence_missing")
             if sys_status_age > float(self.get_parameter("sys_status_max_age_s").value):
                 reasons.append("fcu_sys_status_stale")
             if not prearm_healthy:
@@ -630,6 +649,7 @@ class P4MissionNode(Node):
                 "xyz_m": list(self.current_xyz),
                 "stamp_nonmonotonic": self.current_odom_stamp_violations,
                 "max_gap_s": self.current_odom_max_gap_s,
+                "raw_cross_delta_m": cross_odom_delta,
             },
             "fcu_state": {
                 "connected": bool(self.fcu_state.connected),
@@ -733,7 +753,14 @@ class P4MissionNode(Node):
         disarmed = state_fresh and not bool(self.fcu_state.armed)
         mode_is_land = str(self.fcu_state.mode).upper() == "LAND"
         flight_started = bool(getattr(self, "armed_seen", False))
-        confirmed = bool(disarmed and (not flight_started or mode_is_land))
+        state_after_termination = bool(
+            not flight_started
+            or self.termination_started is None
+            or self.fcu_state_last_wall >= self.termination_started
+            or getattr(self, "disarm_observed_after_termination", False)
+        )
+        confirmed = bool(disarmed and (not flight_started or mode_is_land)
+                         and state_after_termination)
         odom_fresh = bool(
             self.have_odom
             and time.monotonic() - self.current_odom_last_wall
@@ -746,6 +773,7 @@ class P4MissionNode(Node):
             "disarmed": bool(disarmed),
             "mode_is_land": mode_is_land,
             "armed_seen": flight_started,
+            "state_after_termination": state_after_termination,
             "evidence": (
                 "fresh_fcu_disarm_in_land" if confirmed and flight_started
                 else "fresh_fcu_remained_disarmed" if confirmed

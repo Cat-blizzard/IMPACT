@@ -127,6 +127,7 @@ def analyze(events: list[dict], telemetry: list[dict], *, reserve_m: float,
         if isinstance(row.get("delta_margin"), (int, float))
         and math.isfinite(float(row["delta_margin"]))
         and float(row["delta_margin"]) > 0.0
+        and row.get("information_improved", True) is True
     ]
     short_hover_observations = sum(
         cycle["new_observation_events"] > 0 and cycle["observation_intent"] == "short_hover"

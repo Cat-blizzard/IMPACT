@@ -90,6 +90,8 @@ class SITLMission(P4MissionNode):
                 "armed": bool(self.fcu_state.armed), "mode": self.fcu_state.mode,
                 "state_age_s": (time.monotonic()-self.fcu_state_last_wall
                                 if self.fcu_state_last_wall else None)},
+            final_health=self._health_snapshot(require_prearm=False),
+            task_controller_failure=self.task_status.get("execution_fault"),
             verified_parameters=self.verified_params, events=self.events,
             elapsed_wall_s=time.monotonic()-self.started,
             elapsed_sim_s=None if self.task_started is None else (self.task_ended if self.task_ended is not None else self.get_clock().now().nanoseconds/1e9)-self.task_started)

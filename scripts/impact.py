@@ -271,14 +271,25 @@ def audit_dataflash_termination(run):
                     "name": DATAFLASH_FLIGHT_EVENTS[event_id],
                 }
                 events.append(event)
-                if event_id == 10:
+        # DataFlash can emit LAND_COMPLETE and DISARMED with the same TimeUS.
+        # Apply the landed detector transition before disarm within one
+        # timestamp, while retaining NOT_LANDED as the final state at that
+        # timestamp.  Arrival order in the binary stream is not evidence of
+        # semantic ordering for simultaneous FCU events.
+        events.sort(key=lambda item: (item["file"], item["time_us"],
+                                      {10: 0, 17: 1, 18: 1, 28: 2, 11: 3}.get(item["id"], 9)))
+        armed = False
+        land_complete = False
+        for event in events:
+            event_id = event["id"]
+            if event_id == 10:
                     armed = True
                     land_complete = False
-                elif event_id == 18 and armed:
+            elif event_id == 18 and armed:
                     land_complete = True
-                elif event_id == 28 and armed:
+            elif event_id == 28 and armed:
                     land_complete = False
-                elif event_id == 11:
+            elif event_id == 11:
                     if armed and land_complete:
                         confirmed_cycles += 1
                     armed = False
