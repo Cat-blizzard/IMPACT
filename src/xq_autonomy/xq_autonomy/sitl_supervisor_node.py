@@ -37,11 +37,12 @@ RECOVERY_BODY_RADIUS_M = 0.35
 RECOVERY_BASE_RESERVE_M = 0.10
 RECOVERY_TRACKING_RESERVE_M = 0.10
 RECOVERY_MARGIN_RESERVE_M = 0.10
-# GPU SITL's information update is quantized at roughly 3e-6 m² per fresh
-# observation.  Keep a positive absolute gain requirement while accepting
-# that measured update granularity; the fixed direction and newer stamp remain
-# mandatory, so clearance changes alone cannot satisfy this gate.
-RECOVERY_MIN_INFORMATION_GAIN_M2 = 1.0e-6
+# GPU SITL's information update is quantized near 1e-6 m² per fresh
+# observation. Keep a positive absolute gain requirement while allowing the
+# smallest repeatable improvement seen in the paired runs; the fixed direction
+# and newer stamp remain mandatory, so clearance changes alone cannot satisfy
+# this gate.
+RECOVERY_MIN_INFORMATION_GAIN_M2 = 5.0e-7
 # An accepted spline is still an execution failure when the estimator has not
 # made measurable progress toward the requested mission goal for a sustained
 # interval.  This is deliberately longer than one planner cycle and is only
