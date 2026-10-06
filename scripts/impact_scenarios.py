@@ -22,12 +22,13 @@ def scenario_geometry(name, seed):
         dict(name="ceiling", center=[20, 0, 10.1], size=[160, 4.4, 0.2]),
         dict(name="left_wall", center=[20, 2.1, 2], size=[160, 0.2, 4.2]),
         dict(name="right_wall", center=[20, -2.1, 2], size=[160, 0.2, 4.2]),
-        # The Mid-360 model has a 40 m range.  The normal end cap remains well
-        # outside the task.  Recoverable keeps a visible, distant longitudinal
-        # reference so the deliberate integrity degradation cannot turn into an
-        # estimator runaway before the recovery step has completed.  The
-        # unrecoverable arm has no cap in the sensor envelope.
-        dict(name="end_wall", center=[30 if name == "recoverable" else 100, 0, 2],
+        # The Mid-360 model has a 40 m range.  The recoverable arm deliberately
+        # loses both longitudinal anchors after the entry wall leaves range;
+        # its end wall is outside the sensor envelope for the whole task.  The
+        # recovery motion must therefore produce a fresh information update
+        # before the mission can be re-authorized.  The normal arm keeps the
+        # closer cap, while unrecoverable has no in-range cap as well.
+        dict(name="end_wall", center=[30 if name == "normal" else 100, 0, 2],
              size=[0.2, 4.4, 4.2]),
         # At the recoverable 35 m placement, the original 4.2 m wall yielded
         # fewer than 110 returns per scan during takeoff. Extend only its
@@ -35,10 +36,9 @@ def scenario_geometry(name, seed):
         # changing where it leaves the 40 m sensor range.
         dict(name="start_wall", center=[start_wall_x, 0, 5], size=[0.2, 4.4, 10.0]),
     ]
-    # The recoverable arm uses the continuous side walls as longitudinal
-    # planes.  Extra wall-attached protrusions made the GPU voxel map close the
-    # corridor intermittently around x=5--6 m, creating a planner stall that
-    # was unrelated to the deliberate integrity degradation.
+    # Keep the recoverable corridor geometrically simple so any stop is caused
+    # by the intentional loss of longitudinal information, rather than a
+    # wall-attached obstacle or a changing collision route.
     xs = (2., 5., 8., 11., 14.) if name == "normal" else ()
     for i, x in enumerate(xs):
         # Real box geometry, identical for all policy arms of a paired seed.
@@ -103,7 +103,7 @@ def scenario_geometry(name, seed):
                     "ceiling_supplies_vertical_plane": True,
                     "ceiling_bottom_z_m": 10.0,
                     "certified_flight_max_z_m": 2.9,
-                    "scenario_features_supply_longitudinal_planes": name != "unrecoverable",
+                    "scenario_features_supply_longitudinal_planes": name == "normal",
                 },
                 seed_effect="Gazebo simulator and sensor RNG plus declared feature geometry jitter",
                 outcome="UNVERIFIED", ground_truth_policy="evaluator_only")
