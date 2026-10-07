@@ -468,6 +468,52 @@ def batch(args):
     summarize(root)
 
 
+def paired_development_evidence(dev_root, frozen):
+    dev_root = Path(dev_root)
+    groups = []
+    pair_fields = ("world_sha256", "vehicle_model_sha256", "config_sha256", "calibration_sha256")
+    for seed in (1000, 1001, 1002):
+        records = {strategy: [] for strategy in ("baseline", "recovery")}
+        for strategy in records:
+            for path in sorted(dev_root.glob(f"recoverable-{strategy}-s{seed}-*")):
+                if not (path / "run.json").is_file():
+                    continue
+                row = read_json(path / "run.json")
+                if (row.get("source_sha256") != frozen or row.get("profile") != "server_gpu"
+                        or row.get("scenario") != "recoverable" or row.get("strategy") != strategy
+                        or row.get("seed") != seed or row.get("run_kind") != "development"
+                        or row.get("completed_record") is not True
+                        or row.get("cleanup", {}).get("passed") is not True
+                        or row.get("mission", {}).get("termination_confirmed") is not True
+                        or row.get("evaluation", {}).get("checks", {}).get("collision_free") is not True):
+                    continue
+                if strategy == "recovery":
+                    if row.get("status") != "PASS":
+                        continue
+                    events = [json.loads(line) for line in (path / "events.jsonl").read_text().splitlines() if line.strip()]
+                    telemetry = [json.loads(line) for line in (path / "telemetry.jsonl").read_text().splitlines() if line.strip()]
+                    audit = analyze_recovery_causality(events, telemetry, reserve_m=0.1,
+                        estimator_memory_horizon_s=row["configuration"]["integrity_information_memory_horizon_s"])
+                    write_json(path / "recovery-causal-audit.json", audit)
+                    if audit.get("mechanism_status") != "PASS":
+                        continue
+                records[strategy].append((path, row))
+        if len(records["recovery"]) != 1:
+            raise RuntimeError(f"seed {seed}: expected one passing information-confirmed recovery run, found {len(records['recovery'])}")
+        recovery_path, recovery = records["recovery"][0]
+        baselines = [(path, row) for path, row in records["baseline"]
+                     if all(recovery.get(key) and row.get(key) == recovery[key] for key in pair_fields)
+                     and row.get("session_id") != recovery.get("session_id")]
+        if not baselines:
+            raise RuntimeError(f"seed {seed}: completed, collision-free paired baseline is missing")
+        baseline_path, baseline = baselines[-1]
+        groups.append(dict(seed=seed, baseline=str(baseline_path), recovery=str(recovery_path),
+                           baseline_status=baseline.get("status"), recovery_status="PASS",
+                           world_sha256=recovery["world_sha256"],
+                           recovery_audit=str(recovery_path / "recovery-causal-audit.json")))
+    return dict(root=str(dev_root), paired_groups=groups, independent_seeds=[1000, 1001, 1002])
+
+
 def validate_server(args):
     """Run the current server protocol with GPU P4 as the entry gate.
 
@@ -582,38 +628,13 @@ def validate_server(args):
         if stage_status != 0 or stage_entry.get("status") != "PASS":
             raise RuntimeError(f"Stage A gate failed: {stage_entry.get('run', stage_root)}")
 
-        # The three independent recoverable development runs are a prerequisite
-        # for the formal matrix.  Failed/incomplete retries remain visible in
-        # the directory but cannot satisfy this gate.
-        dev_root = ROOT/"experiments/results/head_gpu_stage_b_dev_group_current"
-        required_seeds = (1000,1001,1002)
-        development = []
-        for seed in required_seeds:
-            candidates = []
-            for path in sorted(dev_root.glob("recoverable-recovery-s1000-*" if seed == 1000 else
-                                          f"recoverable-recovery-s{seed}-*")):
-                record = path/"run.json"
-                if not record.is_file():
-                    continue
-                row = read_json(record)
-                if row.get("source_sha256") != frozen:
-                    continue
-                audit = read_json(path/"recovery-causal-audit.json") if (path/"recovery-causal-audit.json").is_file() else {}
-                if row.get("status") == "PASS" and row.get("completed_record") is True \
-                        and audit.get("mechanism_status") == "PASS":
-                    candidates.append({"run": str(path), "seed": seed, "status": row.get("status"),
-                                       "recovery_audit": str(path/"recovery-causal-audit.json")})
-            if len(candidates) != 1:
-                raise RuntimeError(f"expected one passing recoverable development run for seed {seed}, found {len(candidates)}")
-            development.extend(candidates)
-        evidence["stage_b_development"] = {"root": str(dev_root), "runs": development,
-            "independent_seeds": list(required_seeds)}
+        evidence["stage_b_development"] = paired_development_evidence(args.development_results, frozen)
 
         if source_hash() != frozen: raise RuntimeError("source changed during validation")
         if external_fingerprint() != frozen_external: raise RuntimeError("external binaries changed during validation")
         write_json(marker,dict(status="PASS",source_sha256=frozen,profile=args.profile,
             external=frozen_external,build_manifest=str(build_manifest),evidence=evidence,
-            note="GPU P4-first validation. Legacy P5 is retained as an independent diagnostic; three recoverable development runs are prerequisite evidence, not a statistical recovery-benefit claim."))
+            note="GPU P4-first validation with three same-build, seed-paired baseline/recovery groups and measured information recovery. Development acceptance is not a statistical recovery-benefit claim."))
         print(f"Server stages passed: {marker}")
     except (OSError,ValueError,RuntimeError,KeyError) as error:
         write_json(marker,dict(status="FAIL",source_sha256=frozen,profile=args.profile,
@@ -926,6 +947,8 @@ def main():
         elif name == "batch":
             s.add_argument("--jobs", type=int, default=1)
             s.add_argument("--validation",default=str(ROOT/"experiments/results/impact_v1/server-validation.json"))
+        elif name == "validate-server":
+            s.add_argument("--development-results", default=str(ROOT/"experiments/results/head_gpu_stage_b_dev_group_current"))
     s=sub.add_parser("bundle"); s.add_argument("run_dir")
     s=sub.add_parser("package"); s.add_argument("--output", required=True)
     s=sub.add_parser("summarize"); s.add_argument("results")

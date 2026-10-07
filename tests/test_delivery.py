@@ -12,6 +12,48 @@ from analyze_p13_gate import recorded_world as p13_recorded_world
 from analyze_p14_gate import recorded_world as p14_recorded_world
 
 
+@pytest.mark.parametrize("invalid", [None, "baseline_missing", "different_world",
+    "different_session", "stale_source", "incomplete", "collision", "no_information_chain"])
+def test_development_requires_three_independent_matching_pairs(tmp_path, monkeypatch, invalid):
+    horizons = []
+
+    def audit(events, telemetry, *, reserve_m, estimator_memory_horizon_s):
+        horizons.append(estimator_memory_horizon_s)
+        return {"mechanism_status": "NOT_DEMONSTRATED" if invalid == "no_information_chain" else "PASS"}
+
+    monkeypatch.setattr(impact, "analyze_recovery_causality", audit)
+    for seed in (1000, 1001, 1002):
+        for strategy in ("baseline", "recovery"):
+            if seed == 1002 and strategy == "baseline" and invalid == "baseline_missing":
+                continue
+            path = tmp_path / f"recoverable-{strategy}-s{seed}-fixture"
+            row = dict(source_sha256="head", profile="server_gpu", scenario="recoverable",
+                strategy=strategy, seed=seed, run_kind="development", completed_record=True,
+                status="FAIL" if strategy == "baseline" else "PASS",
+                session_id=f"{strategy}-{seed}", world_sha256=f"world-{seed}",
+                vehicle_model_sha256="vehicle", config_sha256="config", calibration_sha256="calibration",
+                cleanup=dict(passed=True), mission=dict(termination_confirmed=True),
+                evaluation=dict(checks=dict(collision_free=True)),
+                configuration=dict(integrity_information_memory_horizon_s=3.0))
+            if seed == 1002 and strategy == "baseline":
+                if invalid == "different_world": row["world_sha256"] = "other-world"
+                if invalid == "different_session": row["session_id"] = "recovery-1002"
+                if invalid == "stale_source": row["source_sha256"] = "old-head"
+                if invalid == "incomplete": row["completed_record"] = False
+                if invalid == "collision": row["evaluation"]["checks"]["collision_free"] = False
+            impact.write_json(path / "run.json", row)
+            (path / "events.jsonl").write_text("{}\n")
+            (path / "telemetry.jsonl").write_text("{}\n")
+    if invalid:
+        with pytest.raises(RuntimeError):
+            impact.paired_development_evidence(tmp_path, "head")
+    else:
+        result = impact.paired_development_evidence(tmp_path, "head")
+        assert result["independent_seeds"] == [1000, 1001, 1002]
+        assert len(result["paired_groups"]) == 3
+        assert horizons == [3.0, 3.0, 3.0]
+
+
 def test_seed_changes_real_geometry_and_paired_arms_share_world(tmp_path):
     a=scenario_geometry("recoverable",7)
     assert a == scenario_geometry("recoverable",7)

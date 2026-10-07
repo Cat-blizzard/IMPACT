@@ -20,7 +20,7 @@ def mission(tmp_path, monkeypatch):
     params = dict(result_file=str(tmp_path / "mission.json"), task_timeout_sim_s=180.0,
         mission_timeout_s=700.0, health_status_max_age_s=0.7, health_odom_max_age_s=0.7,
         sys_status_max_age_s=2.5, fcu_state_max_age_s=2.5, health_fault_window_s=2.0,
-        failsafe_termination_timeout_s=90.0)
+        failsafe_termination_timeout_s=90.0, cross_odom_max_delta_m=5.0)
     node.get_parameter = lambda key: SimpleNamespace(value=params[key])
     node.get_clock = lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=int(clock.sim * 1e9)))
     node.stage_pub = SimpleNamespace(publish=lambda _: None)

@@ -100,11 +100,45 @@ def test_late_candidate_cannot_replace_current_recovery_request(node):
     assert node.pending is None
 
 
+def test_active_margin_loss_cannot_resume_without_information_recovery(node):
+    node.strategy = "recovery"
+    node.cycle.issue("mission")
+    node.candidate(candidate(node)); node.tick()
+    assert node.active is not None
+    node.integrity.integrity_covariance = (np.eye(3) * 1e6).flatten().tolist()
+    node.tick()
+    assert node.active is None
+    assert node.recovery_required
+    node.integrity.integrity_covariance = (np.eye(3) * 1e-12).flatten().tolist()
+    node.cycle.issue("mission")
+    published = len(node.test_pubs["spline_pub"])
+    node.candidate(candidate(node, identifier=2)); node.tick()
+    assert node.active is None
+    assert len(node.test_pubs["spline_pub"]) == published
+    assert not node.test_pubs["auth_pub"][-1].authorized
+
+
+def test_mission_rejection_latches_recovery_during_cooldown(node):
+    node.strategy = "recovery"
+    node.last_recovery_sim = 10.
+    node.cycle.issue("mission")
+    node.integrity.integrity_covariance = (np.eye(3) * 1e6).flatten().tolist()
+    node.candidate(candidate(node)); node.tick()
+    assert node.recovery_required
+    assert not node.cycle.remaining
+
+
 def test_observation_resumes_planning_but_needs_online_certification(node):
     node.cycle.issue("left")
+    node.recovery_step_request_id = node.cycle.request
     node.cycle.arrived(9.)
     node.observing_until=9.5
     node.recovery_before=dict(AL=1.,PL=2.,margin=-1.)
+    node.recovery_required = True
+    node.integrity.weak_direction_map = [1., 0., 0.]
+    node.integrity.information_matrix = (np.eye(3) * 30.).flatten().tolist()
+    node.recovery_before_information = dict(direction=[1., 0., 0.], variance_m2=1e-4,
+        geometric_information=20., protection_m=0.1, stamp_s=9.)
     node.tick()
     assert node.cycle.intent == "mission" and node.cycle.phase == "PLANNING"
     assert node.test_pubs["goal_pub"] and not node.completed
@@ -114,24 +148,69 @@ def test_observation_resumes_planning_but_needs_online_certification(node):
     event=next(r for r in rows if r["event"] == "RECOVERY_CONFIRMED")
     assert event["delta_margin"] == pytest.approx(event["delta_AL"]-event["delta_PL"])
     assert not node.cycle.remaining
+    assert event["information_improved"] is True
+    assert event["information_after"]["geometric_information"] > 20.
 
 
 def test_accepted_mission_after_recovery_is_not_benefit_without_margin_gain(node):
     node.cycle.issue("left")
+    node.recovery_step_request_id = node.cycle.request
     node.cycle.arrived(9.)
     node.observing_until = 9.5
     node.recovery_before = dict(AL=10., PL=0., margin=10.)
+    node.recovery_required = True
+    node.integrity.weak_direction_map = [1., 0., 0.]
+    node.integrity.information_matrix = (np.eye(3) * 30.).flatten().tolist()
+    node.recovery_before_information = dict(direction=[1., 0., 0.], variance_m2=1e-4,
+        geometric_information=20., protection_m=0.1, stamp_s=9.)
     node.tick()
     node.candidate(candidate(node)); node.tick()
     rows = [json.loads(line) for line in impact.Path(node.events.name).read_text().splitlines()]
     assert any(row["event"] == "RECOVERY_NOT_BENEFICIAL" for row in rows)
     assert not any(row["event"] == "RECOVERY_CONFIRMED" for row in rows)
+    assert node.active is None
+    assert not node.test_pubs["spline_pub"]
+    assert not node.test_pubs["auth_pub"][-1].authorized
+
+
+@pytest.mark.parametrize("evidence", ["missing", "clearance_only", "covariance_only", "stale", "no_step"])
+def test_mission_cannot_resume_without_new_geometric_information(node, evidence):
+    node.recovery_before = dict(AL=0.1, PL=0.2, margin=-0.1)
+    node.recovery_required = True
+    node.recovery_before_information = dict(direction=[1., 0., 0.], variance_m2=1e-4,
+        geometric_information=20., protection_m=0.1, stamp_s=9.)
+    node.integrity.weak_direction_map = [1., 0., 0.]
+    node.integrity.information_matrix = (np.eye(3) * 30.).flatten().tolist()
+    node.cycle.issue("left")
+    node.recovery_step_request_id = node.cycle.request if evidence != "no_step" else None
+    node.cycle.arrived(9.)
+    node.observing_until = 9.5
+    if evidence == "missing":
+        node.recovery_before_information = None
+    elif evidence == "clearance_only":
+        node.integrity.integrity_covariance = (np.eye(3) * 2e-4).flatten().tolist()
+    elif evidence == "covariance_only":
+        node.integrity.information_matrix = (np.eye(3) * 10.).flatten().tolist()
+    else:
+        node.recovery_before_information["stamp_s"] = 10.
+    node.tick()
+    node.candidate(candidate(node)); node.tick()
+    assert node.active is None
+    assert node.recovery_required
+    assert not node.test_pubs["spline_pub"]
+    assert not node.test_pubs["auth_pub"][-1].authorized
+    # Retry without another observation must retain the recovery latch.
+    node.cycle.issue("mission")
+    node.candidate(candidate(node, identifier=2)); node.tick()
+    assert node.active is None
+    assert not node.test_pubs["spline_pub"]
 
 
 def test_unconfirmed_observation_continues_remaining_recovery_intents(node):
     remaining = [("backtrack", np.array([-.5, 0., 2.]), 1.0)]
     node.cycle.remaining = list(remaining)
     node.recovery_before = dict(AL=1., PL=2., margin=-1.)
+    node.recovery_required = True
     node.recovery_observed = True
     node.cycle.issue("mission")
     node.integrity.integrity_covariance = (np.eye(3) * 1e6).flatten().tolist()

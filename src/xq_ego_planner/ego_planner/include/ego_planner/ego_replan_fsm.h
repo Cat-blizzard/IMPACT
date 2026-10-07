@@ -69,6 +69,7 @@ namespace ego_planner
     std::string impact_session_;
     uint64_t impact_request_{0};
     double impact_speed_scale_{1.0};
+    double impact_trajectory_speed_scale_{1.0};
     rclcpp::Subscription<xq_sim_interfaces::msg::PlannerGoal>::SharedPtr impact_goal_sub_;
     rclcpp::Publisher<xq_sim_interfaces::msg::PlannerCandidate>::SharedPtr impact_candidate_pub_;
     void publishTrajectory(const traj_utils::msg::Bspline &trajectory);
@@ -111,6 +112,12 @@ namespace ego_planner
     bool callEmergencyStop(Eigen::Vector3d stop_pos);                          // front-end and back-end method
     bool planFromGlobalTraj(const int trial_times = 1);
     bool planFromCurrentTraj(const int trial_times = 1);
+
+    // IMPACT stretches published spline knots by speed_scale. Keep planner
+    // boundary conditions and wall-clock evaluation in the same time domain.
+    Eigen::Vector3d impactPlannerSpeed(const Eigen::Vector3d &physical_velocity) const;
+    double impactTrajectoryTime(const double wall_elapsed) const;
+    double impactTrajectoryDuration(const double planner_duration) const;
 
     /* return value: std::pair< Times of the same state be continuously called, current continuously called state > */
     void changeFSMExecState(FSM_EXEC_STATE new_state, string pos_call);

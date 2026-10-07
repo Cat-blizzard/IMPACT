@@ -311,10 +311,28 @@ def test_failed_transform_cannot_claim_setpoint_was_emitted(arbiter):
     assert status["execution"] == {"emitted": False}
 
 
-def test_inactive_phase_has_no_claim_of_authorized_execution(arbiter):
+@pytest.mark.parametrize("phase", ["LAND", "DESCEND", "FAILSAFE_WAIT"])
+def test_termination_brakes_without_claiming_authorized_execution(arbiter, phase):
+    from mavros_msgs.msg import PositionTarget
     node, now, publications, statuses = arbiter
     tracking_inputs(node, now)
-    node.phase = "DESCEND"
+    node.phase = phase
+    node.tick()
+    status = json.loads(statuses[-1].data)
+    assert publications and not status["authorized"]
+    assert status["mode"] == "BRAKE"
+    assert status["execution"]["emitted"]
+    assert status["execution"]["trajectory_id"] is None
+    assert status["execution"]["request_id"] is None
+    assert publications[-1].type_mask & PositionTarget.IGNORE_VX
+    assert publications[-1].type_mask & PositionTarget.IGNORE_AFX
+
+
+@pytest.mark.parametrize("phase", ["WAIT_FCU", "TAKEOFF", "ASCEND", "DONE", "FAILED"])
+def test_inactive_phase_has_no_claim_of_authorized_execution(arbiter, phase):
+    node, now, publications, statuses = arbiter
+    tracking_inputs(node, now)
+    node.phase = phase
     node.tick()
     status = json.loads(statuses[-1].data)
     assert not publications and not status["authorized"]

@@ -52,8 +52,8 @@ def test_esekf_velocity_is_preferred_only_when_covariance_marks_it_available() -
 
 def test_p4_contract_disables_gps_and_selects_external_nav() -> None:
     params = P4MissionNode.REQUIRED_PARAMS
-    assert params["GPS_TYPE"] == 0
-    assert params["SIM_GPS_DISABLE"] == 1
+    assert params["GPS1_TYPE"] == 0
+    assert params["GPS2_TYPE"] == 0
     assert params["VISO_TYPE"] == 2
     for name in (
         "EK3_SRC1_POSXY",

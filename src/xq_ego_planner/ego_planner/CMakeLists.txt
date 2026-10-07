@@ -30,6 +30,10 @@ find_package(PCL REQUIRED)
 find_package(pcl_conversions REQUIRED)
 
 if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_impact_time_scaling test/test_impact_time_scaling.cpp)
+  target_include_directories(test_impact_time_scaling PRIVATE include ${EIGEN3_INCLUDE_DIR})
+  ament_target_dependencies(test_impact_time_scaling bspline_opt)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
   # comment the line when a copyright and license is added to all source files

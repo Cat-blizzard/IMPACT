@@ -37,12 +37,9 @@ RECOVERY_BODY_RADIUS_M = 0.35
 RECOVERY_BASE_RESERVE_M = 0.10
 RECOVERY_TRACKING_RESERVE_M = 0.10
 RECOVERY_MARGIN_RESERVE_M = 0.10
-# GPU SITL's information update is quantized near 1e-6 m² per fresh
-# observation. Keep a positive absolute gain requirement while allowing the
-# smallest repeatable improvement seen in the paired runs; the fixed direction
-# and newer stamp remain mandatory, so clearance changes alone cannot satisfy
-# this gate.
-RECOVERY_MIN_INFORMATION_GAIN_M2 = 5.0e-7
+# Require a measurable covariance reduction and independent geometric
+# information gain on the same pre-recovery direction.
+RECOVERY_MIN_INFORMATION_GAIN_M2 = 1.0e-6
 # An accepted spline is still an execution failure when the estimator has not
 # made measurable progress toward the requested mission goal for a sustained
 # interval.  This is deliberately longer than one planner cycle and is only
@@ -167,7 +164,11 @@ class SITLSupervisor(Node):
         self.recovery_origin = None
         self.recovery_before = None
         self.recovery_before_information = None
+        self.recovery_after_information = None
+        self.recovery_observation_request_id = None
+        self.recovery_step_request_id = None
         self.recovery_observed = False
+        self.recovery_required = False
         self.recovery_information_improved = None
         self.observing_until = None
         self.ready_wall = 0.
@@ -377,20 +378,7 @@ class SITLSupervisor(Node):
                 output.append((forecast.cost, candidate.name, middle, scale, forecast.minimum_margin))
             except (ValueError, np.linalg.LinAlgError):
                 continue
-        # The recoverable corridor's right lateral motion is the only intent
-        # that repeatedly completed the measured step while moving away from
-        # the entry-side feature.  Keep the forecast/online safety filters
-        # above authoritative, then prefer that already validated safe intent
-        # when it is present instead of spending the task budget on a longer
-        # backtrack candidate.
-        preferred = [item for item in output if item[1] == "right_lateral"]
-        if preferred:
-            preferred.sort(key=lambda item: (item[0], item[1]))
-            remainder = [item for item in output if item[1] != "right_lateral"]
-            remainder.sort(key=lambda item: (item[0], item[1]))
-            output = preferred + remainder
-        else:
-            output.sort(key=lambda item: (item[0], item[1]))
+        output.sort(key=lambda item: (item[0], item[1]))
         self.event(
             "RECOVERY_FORECAST",
             information_visibility_radius_m=self.recovery_information_visibility_radius,
@@ -424,17 +412,21 @@ class SITLSupervisor(Node):
             return None
         try:
             covariance = np.asarray(self.integrity.integrity_covariance, dtype=float).reshape(3, 3)
+            information = np.asarray(self.integrity.information_matrix, dtype=float).reshape(3, 3)
             if direction is None:
                 direction = np.asarray(self.integrity.weak_direction_map, dtype=float).reshape(3)
             direction = np.asarray(direction, dtype=float).reshape(3)
             norm = float(np.linalg.norm(direction))
-            if norm <= 0.0 or not np.isfinite(np.r_[covariance.ravel(), direction]).all():
+            if norm <= 0.0 or not np.isfinite(np.r_[covariance.ravel(), information.ravel(), direction]).all():
                 return None
             direction = direction / norm
             variance = float(direction @ covariance @ direction)
-            if variance < 0.0 or not math.isfinite(variance):
+            observed_information = float(direction @ information @ direction)
+            if (variance < 0.0 or observed_information < 0.0
+                    or not math.isfinite(variance) or not math.isfinite(observed_information)):
                 return None
             return dict(direction=direction.tolist(), variance_m2=variance,
+                        geometric_information=observed_information,
                         protection_m=self.k * math.sqrt(variance),
                         stamp_s=stamp_s(self.integrity.header.stamp))
         except (TypeError, ValueError, np.linalg.LinAlgError):
@@ -486,6 +478,18 @@ class SITLSupervisor(Node):
         self.cycle.phase = "FAIL_CLOSED"
         self.event("EXECUTION_FAIL_CLOSED", **self.execution_fault)
 
+    def _require_information_recovery(self):
+        if self.strategy != "recovery" or self.recovery_required:
+            return
+        self.recovery_required = True
+        self.recovery_before = dict(self.last_metrics)
+        self.recovery_before_information = self._fixed_information_snapshot()
+        self.recovery_after_information = None
+        self.recovery_observation_request_id = None
+        self.recovery_step_request_id = None
+        self.recovery_information_improved = None
+        self.recovery_observed = False
+
     def tick(self):
         now = self.now_s()
         if now < self.last_sim - 1e-6:
@@ -509,6 +513,8 @@ class SITLSupervisor(Node):
             try:
                 result = self.certify(self.active, tracking=True)
                 if not result.accepted:
+                    if self.cycle.intent == "mission":
+                        self._require_information_recovery()
                     self.revoke(result.reason)
                 else:
                     self.authorization(self.active, True, "REVALIDATED")
@@ -521,37 +527,45 @@ class SITLSupervisor(Node):
                 accepted, reason = result.accepted, result.reason
             except (ValueError, np.linalg.LinAlgError) as error:
                 accepted, reason = False, str(error)
+            recovery_comparison = None
+            if accepted and self.cycle.intent == "mission" and self.recovery_required:
+                before, after = self.recovery_before, self.last_metrics
+                if before:
+                    da, dp = after["AL"]-before["AL"], after["PL"]-before["PL"]
+                    recovery_comparison = dict(
+                        before=before, after=dict(after), delta_AL=da, delta_PL=dp,
+                        delta_margin=da-dp,
+                        information_before=self.recovery_before_information,
+                        information_after=self.recovery_after_information,
+                        observation_request_id=self.recovery_observation_request_id,
+                        information_improved=self.recovery_information_improved is True,
+                        comparison="Fixed pre-recovery direction, covariance and measured information",
+                    )
+                if (self.recovery_information_improved is not True
+                        or not self.recovery_observed
+                        or self.recovery_step_request_id is None
+                        or self.recovery_step_request_id != self.recovery_observation_request_id):
+                    accepted, reason = False, "RECOVERY_INFORMATION_NOT_IMPROVED"
+                elif not recovery_comparison or recovery_comparison["delta_margin"] <= 0.0:
+                    accepted, reason = False, "RECOVERY_MARGIN_NOT_IMPROVED"
             self.event("CERTIFY", accepted=accepted, reason=reason,
                        trajectory_id=candidate.trajectory.traj_id, **self.last_metrics)
+            if not accepted and self.cycle.intent == "mission":
+                self._require_information_recovery()
             self.authorization(candidate, accepted, reason)
             if accepted:
                 self.active = candidate
                 self.spline_pub.publish(candidate.trajectory)
                 self.cycle.result(candidate.request_id, True)
-                if self.cycle.intent == "mission" and self.recovery_observed and self.recovery_before:
-                    before, after = self.recovery_before, self.last_metrics
-                    da, dp = after["AL"]-before["AL"], after["PL"]-before["PL"]
-                    information_improved = self.recovery_information_improved
-                    if information_improved is None:
-                        # Unit and replay callers from before the fixed-reference
-                        # field existed remain diagnosable; live runs always set it.
-                        information_improved = True
-                    event = ("RECOVERY_CONFIRMED"
-                             if information_improved and da-dp > 0.0
-                             else "RECOVERY_NOT_BENEFICIAL")
-                    self.event(event, before=before, after=after,
-                               delta_AL=da, delta_PL=dp, delta_margin=da-dp,
-                               information_before=self.recovery_before_information,
-                               information_improved=bool(information_improved),
-                               comparison="Fixed pre-recovery direction and covariance")
-                    if event == "RECOVERY_CONFIRMED":
-                        self.cycle.remaining.clear()
-                    else:
-                        self.recovery_observed = False
-                        self.recovery_information_improved = None
-                        self.cycle.phase = "WAITING"
+                if recovery_comparison:
+                    self.event("RECOVERY_CONFIRMED", **recovery_comparison)
+                    self.cycle.remaining.clear()
+                    self.recovery_required = False
                     self.recovery_observed = False
+                    self.recovery_information_improved = None
             elif not self.active:
+                if recovery_comparison:
+                    self.event("RECOVERY_NOT_BENEFICIAL", reason=reason, **recovery_comparison)
                 self.cycle.result(candidate.request_id, False)
                 if self.strategy == "recovery" and self.cycle.intent == "mission" and now-self.last_recovery_sim > 2:
                     resume_remaining = self.recovery_observed and bool(self.cycle.remaining)
@@ -563,8 +577,9 @@ class SITLSupervisor(Node):
                     if not resume_remaining:
                         self.cycle.remaining = self.recovery_intents(candidate)
                         self.recovery_origin = xyz(self.odom.pose.pose.position)
-                        self.recovery_before = dict(self.last_metrics)
-                        self.recovery_before_information = self._fixed_information_snapshot()
+                        self.recovery_after_information = None
+                        self.recovery_observation_request_id = None
+                        self.recovery_step_request_id = None
                         self.recovery_information_improved = None
                         self.last_recovery_sim = now
         position = xyz(self.odom.pose.pose.position)
@@ -581,6 +596,7 @@ class SITLSupervisor(Node):
         elif self.cycle.intent != "mission" and self.cycle.phase == "EXECUTING" and np.linalg.norm(position-self.target) < 0.2 and speed < 0.15:
             self.revoke("RECOVERY_STEP_DONE")
             self.cycle.arrived(now)
+            self.recovery_step_request_id = self.cycle.request
             self.observing_until = now + 0.5
             self.event("RECOVERY_STEP_DONE")
         elif self.cycle.phase == "OBSERVING" and now >= self.observing_until and self.cycle.observed(stamp_s(self.integrity.header.stamp)):
@@ -593,7 +609,10 @@ class SITLSupervisor(Node):
                 and after_information["stamp_s"] > self.recovery_before_information["stamp_s"]
                 and after_information["variance_m2"]
                 <= self.recovery_before_information["variance_m2"] - RECOVERY_MIN_INFORMATION_GAIN_M2
-            ) if self.recovery_before_information else None
+                and after_information["geometric_information"]
+                > self.recovery_before_information["geometric_information"]
+                + 1.0e-9 * max(1.0, self.recovery_before_information["geometric_information"])
+            )
             self.event("NEW_OBSERVATION", before=self.recovery_before,
                        observed_PL=float(self.integrity.weak_direction_protection_level),
                        information_before=self.recovery_before_information,
@@ -601,6 +620,8 @@ class SITLSupervisor(Node):
                        information_improved=information_improved)
             self.recovery_observed = True
             self.recovery_information_improved = information_improved
+            self.recovery_after_information = after_information
+            self.recovery_observation_request_id = self.cycle.request
             self.request(self.goal, scale=self.mission_speed_scale)
         elif not self.completed and not self.active and self.cycle.phase != "OBSERVING" and now-self.last_plan_sim > 1:
             settling_recovery = self.cycle.intent != "mission" and self.cycle.phase == "EXECUTING"

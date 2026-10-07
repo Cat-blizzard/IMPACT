@@ -1,5 +1,6 @@
 
 #include <ego_planner/ego_replan_fsm.h>
+#include <ego_planner/impact_time_scaling.h>
 
 namespace ego_planner
 {
@@ -211,7 +212,9 @@ namespace ego_planner
   void EGOReplanFSM::planNextWaypoint(const Eigen::Vector3d next_wp)
   {
     bool success = false;
-    success = planner_manager_->planGlobalTraj(odom_pos_, odom_vel_, Eigen::Vector3d::Zero(), next_wp, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
+    success = planner_manager_->planGlobalTraj(odom_pos_, impactPlannerSpeed(odom_vel_),
+                                               Eigen::Vector3d::Zero(), next_wp,
+                                               Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
 
     if (success)
     {
@@ -595,8 +598,8 @@ namespace ego_planner
       /* determine if need to replan */
       LocalTrajData *info = &planner_manager_->local_data_;
       rclcpp::Time time_now = node_->get_clock()->now();
-      double t_cur = (time_now - info->start_time_).seconds();
-      t_cur = std::min(info->duration_, t_cur);
+      double wall_elapsed = std::max(0.0, (time_now - info->start_time_).seconds());
+      double t_cur = std::min(info->duration_, impactTrajectoryTime(wall_elapsed));
 
       Eigen::Vector3d pos = info->position_traj_.evaluateDeBoorT(t_cur);
 
@@ -610,7 +613,7 @@ namespace ego_planner
       }
       else if ((local_target_pt_ - end_pt_).norm() < 1e-3) // close to the global target
       {
-        if (t_cur > info->duration_ - 1e-2)
+        if (wall_elapsed > impactTrajectoryDuration(info->duration_) - 1e-2)
         {
           have_target_ = false;
           have_trigger_ = false;
@@ -624,12 +627,13 @@ namespace ego_planner
           changeFSMExecState(WAIT_TARGET, "FSM");
           goto force_return;
         }
-        else if ((end_pt_ - pos).norm() > no_replan_thresh_ && t_cur > replan_thresh_)
+        else if ((end_pt_ - pos).norm() > no_replan_thresh_
+                 && wall_elapsed > impactTrajectoryDuration(replan_thresh_))
         {
           changeFSMExecState(REPLAN_TRAJ, "FSM");
         }
       }
-      else if (t_cur > replan_thresh_)
+      else if (wall_elapsed > impactTrajectoryDuration(replan_thresh_))
       {
         changeFSMExecState(REPLAN_TRAJ, "FSM");
       }
@@ -670,7 +674,7 @@ namespace ego_planner
   bool EGOReplanFSM::planFromGlobalTraj(const int trial_times /*=1*/) // zx-todo
   {
     start_pt_ = odom_pos_;
-    start_vel_ = odom_vel_;
+    start_vel_ = impactPlannerSpeed(odom_vel_);
     start_acc_.setZero();
 
     bool flag_random_poly_init;
@@ -748,15 +752,15 @@ namespace ego_planner
     /* ---------- check trajectory ---------- */
     constexpr double time_step = 0.01;
     // double t_cur = (ros::Time::now() - info->start_time_).toSec();
-    double t_cur = (node_->get_clock()->now() - info->start_time_).seconds();
+    double wall_elapsed = std::max(0.0, (node_->get_clock()->now() - info->start_time_).seconds());
+    double t_cur = std::min(info->duration_, impactTrajectoryTime(wall_elapsed));
 
-    Eigen::Vector3d p_cur = info->position_traj_.evaluateDeBoorT(t_cur);
     const double CLEARANCE = 1.0 * planner_manager_->getSwarmClearance();
     // double t_cur_global = ros::Time::now().toSec();
     double t_cur_global = node_->get_clock()->now().seconds();
 
     double t_2_3 = info->duration_ * 2 / 3;
-    for (double t = t_cur; t < info->duration_; t += time_step)
+    for (double t = t_cur; t < info->duration_; t += impactTrajectoryTime(time_step))
     {
       if (t_cur < t_2_3 && t >= t_2_3) // If t_cur < t_2_3, only the first 2/3 partition of the trajectory is considered valid and will get checked.
         break;
@@ -771,9 +775,10 @@ namespace ego_planner
           continue;
         }
 
-        double t_X = t_cur_global - planner_manager_->swarm_trajs_buf_.at(id).start_time_.seconds();
+        double t_X = t_cur_global + impactTrajectoryDuration(t - t_cur)
+                     - planner_manager_->swarm_trajs_buf_.at(id).start_time_.seconds();
         Eigen::Vector3d swarm_pridicted = planner_manager_->swarm_trajs_buf_.at(id).position_traj_.evaluateDeBoorT(t_X);
-        double dist = (p_cur - swarm_pridicted).norm();
+        double dist = (info->position_traj_.evaluateDeBoorT(t) - swarm_pridicted).norm();
 
         if (dist < CLEARANCE)
         {
@@ -793,9 +798,9 @@ namespace ego_planner
         }
         else
         {
-          if (t - t_cur < emergency_time_) // 0.8s of emergency time
+          if (impactTrajectoryDuration(t - t_cur) < emergency_time_)
           {
-            RCLCPP_WARN(node_->get_logger(), "Suddenly discovered obstacles. emergency stop! time=%f", t - t_cur);
+            RCLCPP_WARN(node_->get_logger(), "Suddenly discovered obstacles. emergency stop! time=%f", impactTrajectoryDuration(t - t_cur));
 
             changeFSMExecState(EMERGENCY_STOP, "SAFETY");
           }
@@ -960,10 +965,26 @@ namespace ego_planner
     result.session_id = impact_session_;
     result.request_id = impact_request_;
     result.trajectory = trajectory;
+    impact_trajectory_speed_scale_ = impact_speed_scale_;
     // Time dilation changes dynamics, so the receiver certifies this final spline.
     if (impact_speed_scale_ < 1.0)
       for (auto &knot : result.trajectory.knots) knot /= impact_speed_scale_;
     impact_candidate_pub_->publish(result);
+  }
+
+  Eigen::Vector3d EGOReplanFSM::impactPlannerSpeed(const Eigen::Vector3d &physical_velocity) const
+  {
+    return impactPlannerVelocity(physical_velocity, impact_mode_ ? impact_speed_scale_ : 1.0);
+  }
+
+  double EGOReplanFSM::impactTrajectoryTime(const double wall_elapsed) const
+  {
+    return impactPlannerElapsed(wall_elapsed, impact_mode_ ? impact_trajectory_speed_scale_ : 1.0);
+  }
+
+  double EGOReplanFSM::impactTrajectoryDuration(const double planner_duration) const
+  {
+    return impactExecutionDuration(planner_duration, impact_mode_ ? impact_trajectory_speed_scale_ : 1.0);
   }
 
   void EGOReplanFSM::getLocalTarget()

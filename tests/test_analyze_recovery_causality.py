@@ -1,9 +1,18 @@
 from analyze_recovery_causality import analyze
+from copy import deepcopy
 
 
 def event(kind, time, request, **values):
     return {"event": kind, "sim_time": time, "wall_time": time,
             "request_id": request, **values}
+
+
+def information_evidence():
+    return dict(information_improved=True,
+                information_before=dict(direction=[1.0, 0.0, 0.0], stamp_s=1.0,
+                                        variance_m2=1e-4, geometric_information=20.0),
+                information_after=dict(direction=[1.0, 0.0, 0.0], stamp_s=2.05,
+                                       variance_m2=8e-5, geometric_information=30.0))
 
 
 def test_audit_links_forecast_rejection_hover_and_failed_mission_retry():
@@ -41,10 +50,11 @@ def test_audit_does_not_call_confirmed_recovery_a_failure():
         event("PLAN_REQUEST", 1.1, 2, intent="up_offset"),
         event("CERTIFY", 1.2, 2, accepted=True, margin=0.2),
         event("RECOVERY_STEP_DONE", 2.0, 2),
-        event("NEW_OBSERVATION", 2.1, 2),
-        event("RECOVERY_CONFIRMED", 2.3, 3, delta_margin=0.05),
+        event("NEW_OBSERVATION", 2.1, 2, **information_evidence()),
         event("PLAN_REQUEST", 2.2, 3, intent="mission"),
         event("CERTIFY", 2.3, 3, accepted=True, margin=0.15),
+        event("RECOVERY_CONFIRMED", 2.3, 3, delta_margin=0.05,
+              observation_request_id=2, **information_evidence()),
     ]
     telemetry = [{"sim_time": 1.0, "truth": [0, 0, 0], "intent": "up_offset"},
                  {"sim_time": 2.1, "truth": [0, 0.4, 0], "intent": "up_offset"}]
@@ -73,3 +83,45 @@ def test_audit_rejects_confirmation_without_measured_benefit():
     report = analyze(events, telemetry, reserve_m=0.1, estimator_memory_horizon_s=3.0)
     assert report["mechanism_status"] == "NOT_DEMONSTRATED"
     assert not report["mechanism_checks"]["measured_margin_improved"]
+
+
+def test_missing_information_confirmation_does_not_pass():
+    report = analyze([event("RECOVERY_CONFIRMED", 2.3, 3, delta_margin=0.05)], [],
+                     reserve_m=0.1, estimator_memory_horizon_s=3.0)
+    assert not report["mechanism_checks"]["measured_margin_improved"]
+    assert report["mechanism_status"] == "NOT_DEMONSTRATED"
+
+
+def test_information_chain_requires_same_request_session_and_post_step_stamp():
+    events = [
+        event("RECOVERY_FORECAST", 1.0, 1, candidates=[]),
+        event("PLAN_REQUEST", 1.1, 2, intent="up_offset"),
+        event("CERTIFY", 1.2, 2, accepted=True, margin=0.2),
+        event("RECOVERY_STEP_DONE", 2.0, 2),
+        event("NEW_OBSERVATION", 2.1, 2, **information_evidence()),
+        event("PLAN_REQUEST", 2.2, 3, intent="mission"),
+        event("CERTIFY", 2.3, 3, accepted=True, margin=0.15),
+        event("RECOVERY_CONFIRMED", 2.3, 3, delta_margin=0.05,
+              observation_request_id=2, **information_evidence()),
+    ]
+    assert analyze(events, [], reserve_m=0.1, estimator_memory_horizon_s=3.0)["mechanism_status"] == "PASS"
+    for mutation in ("session", "request", "stamp", "information", "variance", "direction", "cross_cycle"):
+        broken = deepcopy(events)
+        if mutation == "session":
+            broken[2]["session_id"] = "other"
+        elif mutation == "request":
+            broken[3]["request_id"] = 99
+        elif mutation == "cross_cycle":
+            broken.insert(4, event("RECOVERY_FORECAST", 2.05, 2, candidates=[]))
+        else:
+            after = broken[4]["information_after"]
+            if mutation == "stamp":
+                after["stamp_s"] = 1.9
+            elif mutation == "information":
+                after["geometric_information"] = 15.0
+            elif mutation == "variance":
+                after["variance_m2"] = 1e-4 - 5e-7
+            elif mutation == "direction":
+                after["direction"] = [0.0, 1.0, 0.0]
+        report = analyze(broken, [], reserve_m=0.1, estimator_memory_horizon_s=3.0)
+        assert report["mechanism_status"] == "NOT_DEMONSTRATED", mutation
