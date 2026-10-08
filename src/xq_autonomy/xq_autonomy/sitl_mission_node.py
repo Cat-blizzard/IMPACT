@@ -4,6 +4,9 @@ import time
 from rclpy.clock import Clock, ClockType
 from pathlib import Path
 from std_msgs.msg import String
+from xq_sim_interfaces.msg import LocalizationGeometry
+from rclpy.qos import qos_profile_sensor_data
+from .localization_health import geometry_health
 from .p4_mission_node import P4MissionNode
 from .sitl_supervisor_node import main_node
 
@@ -21,6 +24,21 @@ class SITLMission(P4MissionNode):
         self.create_timer(0.1, self._tick, clock=self.wall_clock)
         self.declare_parameter("session_id", "")
         self.declare_parameter("task_timeout_sim_s", 180.)
+        # GPU SITL can briefly delay the supervisor/arbiter status callback
+        # while a large point-cloud callback is serialized.  Keep this as a
+        # bounded wall watchdog rather than treating one missed callback as a
+        # flight failure; estimator/FCU health gates remain independent.
+        self.declare_parameter("control_status_timeout_s", 1.0)
+        self.declare_parameter("geometry_max_age_s", 0.7)
+        # A development policy floor: each translational direction must carry
+        # at least 2% of instantaneous information before takeoff. Do not use
+        # accumulated frames to make a rank-deficient scene appear healthy.
+        self.declare_parameter("takeoff_minimum_weak_fraction", 0.02)
+        self.declare_parameter("takeoff_minimum_geometry_points", 30)
+        self.geometry = None
+        self.geometry_wall = 0.
+        self.create_subscription(LocalizationGeometry, "/localization/geometry",
+                                 self.geometry_cb, qos_profile_sensor_data)
         self.session = self.get_parameter("session_id").value
         self.stage_pub = self.create_publisher(String, "/impact/mission_stage", 10)
         self.create_subscription(String, "/impact/status", self.status_cb, 10)
@@ -33,6 +51,47 @@ class SITLMission(P4MissionNode):
         self.task_success = False
         self.task_reason = "NOT_STARTED"
         self.last_sim = -1.
+
+    def geometry_cb(self, msg):
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        previous = self.geometry
+        if previous is not None:
+            previous_stamp = previous.header.stamp.sec + previous.header.stamp.nanosec * 1e-9
+            if stamp <= previous_stamp:
+                return
+        self.geometry, self.geometry_wall = msg, time.monotonic()
+
+    def _health_snapshot(self, require_prearm=False):
+        snapshot = super()._health_snapshot(require_prearm=require_prearm)
+        reasons = list(snapshot["reasons"])
+        measured = dict(healthy=False, reasons=["geometry_missing"])
+        geometry = self.geometry
+        if geometry is not None:
+            measured = geometry_health(
+                geometry.information_matrix, geometry.effective_points,
+                minimum_weak_fraction=float(self.get_parameter("takeoff_minimum_weak_fraction").value),
+                minimum_points=int(self.get_parameter("takeoff_minimum_geometry_points").value))
+            geometry_stamp = geometry.header.stamp.sec + geometry.header.stamp.nanosec * 1e-9
+            wall_age = time.monotonic() - self.geometry_wall
+            sim_age = self.get_clock().now().nanoseconds / 1e9 - geometry_stamp
+            maximum_age = float(self.get_parameter("geometry_max_age_s").value)
+            measured.update(stamp_s=geometry_stamp, wall_age_s=wall_age, sim_age_s=sim_age)
+            if wall_age > maximum_age or sim_age > maximum_age or sim_age < -0.05:
+                measured["reasons"].append("geometry_stale")
+                measured["healthy"] = False
+            if geometry.header.frame_id != self.raw_odom_frame_id:
+                measured["reasons"].append("geometry_frame_mismatch")
+                measured["healthy"] = False
+        # ACTIVE degradation belongs to trajectory revocation/recovery. Missing
+        # or invalid sensor evidence still terminates flight independently.
+        rank_required = self.phase in {
+            "WAIT_FCU", "SET_STREAM", "VERIFY_NAV", "WAIT_PREARM", "SET_GUIDED",
+            "ARM", "TAKEOFF", "ASCEND", "HOVER"}
+        reasons.extend(reason for reason in measured["reasons"]
+                       if rank_required or reason != "geometry_translation_unobservable")
+        snapshot.update(healthy=not reasons, reasons=reasons,
+                        localization_geometry={**measured, "takeoff_rank_required": rank_required})
+        return snapshot
 
     def status_cb(self, msg):
         try:
@@ -69,6 +128,13 @@ class SITLMission(P4MissionNode):
         elif status != "PASS" and not self.task_success and self.task_reason == "NOT_STARTED":
             self.task_reason = reason
         termination = self._termination_evidence()
+        final_health = self._health_snapshot(require_prearm=True)
+        preflight_refusal = dict(
+            confirmed=bool(status != "PASS" and self.task_started is None
+                           and not termination["armed_seen"]
+                           and termination["confirmed"]
+                           and final_health["reasons"]),
+            phase=self.phase, reasons=list(final_health["reasons"]))
         state_fresh = bool(termination["state_fresh"])
         termination_confirmed = bool(termination["confirmed"])
         if not self.termination_reason:
@@ -90,7 +156,7 @@ class SITLMission(P4MissionNode):
                 "armed": bool(self.fcu_state.armed), "mode": self.fcu_state.mode,
                 "state_age_s": (time.monotonic()-self.fcu_state_last_wall
                                 if self.fcu_state_last_wall else None)},
-            final_health=self._health_snapshot(require_prearm=False),
+            final_health=final_health, preflight_refusal=preflight_refusal,
             task_controller_failure=self.task_status.get("execution_fault"),
             verified_parameters=self.verified_params, events=self.events,
             elapsed_wall_s=time.monotonic()-self.started,
@@ -156,7 +222,8 @@ class SITLMission(P4MissionNode):
                 self.task_started = now
                 self._transition("ACTIVE", "enable certified EGO task")
         elif self.phase == "ACTIVE":
-            fresh = wall-self.task_wall < 1.0 and wall-self.arbiter_wall < 1.0
+            status_timeout = float(self.get_parameter("control_status_timeout_s").value)
+            fresh = wall-self.task_wall < status_timeout and wall-self.arbiter_wall < status_timeout
             reason = None
             if fresh and self.task_status.get("completed"):
                 self.task_success, reason = True, "GOAL_REACHED"

@@ -92,6 +92,14 @@ class P4MissionNode(Node):
         "GPS1_TYPE": 0,
         "GPS2_TYPE": 0,
     }
+    # ArduPilot 4.5 exposes GPS_TYPE/GPS_TYPE2, while newer releases expose
+    # GPS1_TYPE/GPS2_TYPE.  Keep one canonical evidence key and resolve the
+    # FCU-specific spelling at runtime instead of failing closed on a known
+    # version difference.
+    PARAM_ALIASES = {
+        "GPS1_TYPE": ("GPS1_TYPE", "GPS_TYPE"),
+        "GPS2_TYPE": ("GPS2_TYPE", "GPS_TYPE2"),
+    }
 
     def __init__(self) -> None:
         super().__init__("xq_p4_mission")
@@ -217,6 +225,12 @@ class P4MissionNode(Node):
         self.termination_reason: str | None = None
         self.verified_params: dict[str, int] = {}
         self.param_names = list(self.REQUIRED_PARAMS)
+        self.param_candidates = {
+            name: tuple(self.PARAM_ALIASES.get(name, (name,)))
+            for name in self.param_names
+        }
+        self.param_candidate_index = {name: 0 for name in self.param_names}
+        self.verified_param_sources: dict[str, str] = {}
         self.param_index = 0
         self.pending_param = None
         self.pending_param_pull = None
@@ -466,7 +480,7 @@ class P4MissionNode(Node):
 
     def _poll_param(self) -> None:
         if self.pending_param_get is not None:
-            name, future = self.pending_param_get
+            canonical, query_name, future = self.pending_param_get
             if not future.done():
                 return
             self.pending_param_get = None
@@ -474,17 +488,18 @@ class P4MissionNode(Node):
                 response = future.result()
                 if response.success:
                     value = int(response.value.integer)
-                    expected = self.REQUIRED_PARAMS[name]
+                    expected = self.REQUIRED_PARAMS[canonical]
                     if value != expected:
-                        self._finish("FAIL", f"parameter {name}={value}, expected {expected}")
+                        self._finish("FAIL", f"parameter {query_name}={value}, expected {expected}")
                         return
-                    self.verified_params[name] = value
+                    self.verified_params[canonical] = value
+                    self.verified_param_sources[canonical] = query_name
                     self.param_index += 1
-                    self._event("PARAM", f"{name}={value} (compat get)")
+                    self._event("PARAM", f"{canonical}={value} (source={query_name}, compat get)")
                 else:
-                    self._event("PARAM_WAIT", f"{name} compatibility get rejected")
+                    self._event("PARAM_WAIT", f"{query_name} compatibility get rejected")
             except Exception as exc:
-                self._event("PARAM_WAIT", f"{name} compatibility get failed: {exc!r}")
+                self._event("PARAM_WAIT", f"{query_name} compatibility get failed: {exc!r}")
 
         if self.pending_param_pull is not None:
             if not self.pending_param_pull.done():
@@ -501,27 +516,41 @@ class P4MissionNode(Node):
             self.last_param_request = time.monotonic() - 1.0
 
         if self.pending_param is not None:
-            name, future = self.pending_param
+            canonical, query_name, future = self.pending_param
             if not future.done():
                 return
             self.pending_param = None
             try:
                 response = future.result()
             except Exception as exc:
-                self._finish("FAIL", f"parameter {name} query failed: {exc!r}")
+                self._finish("FAIL", f"parameter {query_name} query failed: {exc!r}")
                 return
             not_set = len(response.values) == 1 and response.values[0].type == ParameterType.PARAMETER_NOT_SET
             if len(response.values) != 1 or not_set:
-                self._event("PARAM_WAIT", f"{name} not pulled from FCU yet")
+                candidates = self.param_candidates[canonical]
+                candidate_index = self.param_candidate_index[canonical]
+                if candidate_index + 1 < len(candidates):
+                    self.param_candidate_index[canonical] = candidate_index + 1
+                    self.param_pull_attempts = 0
+                    self.param_get_attempts = 0
+                    self.last_param_request = time.monotonic() - 1.0
+                    self._event(
+                        "PARAM_ALIAS",
+                        f"{canonical}: {query_name} unavailable; trying {candidates[candidate_index + 1]}",
+                    )
+                    return
+                self._event("PARAM_WAIT", f"{query_name} not pulled from FCU yet")
                 if (
                     not_set and self.param_get_attempts < 1
                     and self.param_get_client.service_is_ready()
                 ):
                     request = ParamGet.Request()
-                    request.param_id = name
-                    self.pending_param_get = (name, self.param_get_client.call_async(request))
+                    request.param_id = query_name
+                    self.pending_param_get = (
+                        canonical, query_name, self.param_get_client.call_async(request)
+                    )
                     self.param_get_attempts += 1
-                    self._event("PARAM_GET", f"compatibility get requested for {name}")
+                    self._event("PARAM_GET", f"compatibility get requested for {query_name}")
                 if (
                     self.param_pull_attempts < 5
                     and self.param_pull_client.service_is_ready()
@@ -530,7 +559,7 @@ class P4MissionNode(Node):
                     request.force_pull = True
                     self.pending_param_pull = self.param_pull_client.call_async(request)
                     self.param_pull_attempts += 1
-                    self._event("PARAM_PULL", f"requested after empty {name}")
+                    self._event("PARAM_PULL", f"requested after empty {query_name}")
                 return
             parameter = response.values[0]
             if parameter.type == ParameterType.PARAMETER_INTEGER:
@@ -538,30 +567,34 @@ class P4MissionNode(Node):
             elif parameter.type == ParameterType.PARAMETER_DOUBLE:
                 value = int(round(parameter.double_value))
             elif parameter.type == ParameterType.PARAMETER_NOT_SET:
-                self._event("PARAM_WAIT", f"{name} not pulled from FCU yet")
+                self._event("PARAM_WAIT", f"{query_name} not pulled from FCU yet")
                 return
             else:
                 self._finish(
-                    "FAIL", f"parameter {name} has unexpected ROS type {parameter.type}"
+                    "FAIL", f"parameter {query_name} has unexpected ROS type {parameter.type}"
                 )
                 return
-            expected = self.REQUIRED_PARAMS[name]
+            expected = self.REQUIRED_PARAMS[canonical]
             if value != expected:
-                self._finish("FAIL", f"parameter {name}={value}, expected {expected}")
+                self._finish("FAIL", f"parameter {query_name}={value}, expected {expected}")
                 return
-            self.verified_params[name] = value
+            self.verified_params[canonical] = value
+            self.verified_param_sources[canonical] = query_name
             self.param_index += 1
-            self._event("PARAM", f"{name}={value}")
+            self._event("PARAM", f"{canonical}={value} (source={query_name})")
         now = time.monotonic()
         if (
             self.param_index < len(self.param_names)
             and self.param_client.service_is_ready()
             and now - self.last_param_request >= 1.0
         ):
-            name = self.param_names[self.param_index]
+            canonical = self.param_names[self.param_index]
+            query_name = self.param_candidates[canonical][self.param_candidate_index[canonical]]
             request = GetParameters.Request()
-            request.names = [name]
-            self.pending_param = (name, self.param_client.call_async(request))
+            request.names = [query_name]
+            self.pending_param = (
+                canonical, query_name, self.param_client.call_async(request)
+            )
             self.last_param_request = now
 
     def _health_snapshot(self, require_prearm: bool = False) -> dict[str, object]:

@@ -43,12 +43,15 @@ def _observation_intent(telemetry: list[dict], sim_time: float) -> str | None:
 def _information_gain(observation: dict, step_time: float) -> bool:
     if observation.get("information_improved") is not True:
         return False
-    before, after = observation.get("information_before"), observation.get("information_after")
+    before = (observation.get("information_step_before")
+              or observation.get("information_before"))
+    after = observation.get("information_after")
     if not isinstance(before, dict) or not isinstance(after, dict):
         return False
     try:
         values = [float(snapshot[key]) for snapshot in (before, after)
-                  for key in ("stamp_s", "variance_m2", "geometric_information")]
+                  for key in ("stamp_s", "variance_m2", "geometric_information",
+                              "raw_stamp_s", "raw_geometric_information")]
         directions = [list(map(float, snapshot["direction"])) for snapshot in (before, after)]
         return bool(
             all(math.isfinite(value) for value in values + directions[0] + directions[1])
@@ -56,23 +59,28 @@ def _information_gain(observation: dict, step_time: float) -> bool:
             and math.isclose(sum(value * value for value in directions[0]), 1.0, abs_tol=1e-6)
             and all(math.isclose(a, b, abs_tol=1e-9) for a, b in zip(*directions))
             and after["stamp_s"] > max(before["stamp_s"], step_time)
+            and after["raw_stamp_s"] > max(before["raw_stamp_s"], step_time)
             and 0 <= after["variance_m2"] <= before["variance_m2"] - 1e-6
             and before["geometric_information"] >= 0
             and after["geometric_information"] > before["geometric_information"]
                 + 1e-9 * max(1.0, before["geometric_information"])
+            and before["raw_geometric_information"] >= 0
+            and after["raw_geometric_information"] > before["raw_geometric_information"]
+                + 1e-9 * max(1.0, before["raw_geometric_information"])
         )
     except (KeyError, TypeError, ValueError):
         return False
 
 
-def _confirmed_chains(window: list[dict], plans: dict) -> list[dict]:
+def _confirmed_chains(window: list[dict], plans: dict, reserve_m: float) -> list[dict]:
     chains = []
     for index, confirmation in enumerate(window):
         if confirmation.get("event") != "RECOVERY_CONFIRMED":
             continue
-        gain = confirmation.get("delta_margin")
+        margin = confirmation.get("after", {}).get("margin")
         if (confirmation.get("information_improved") is not True
-                or not isinstance(gain, (int, float)) or not math.isfinite(gain) or gain <= 0):
+                or not isinstance(margin, (int, float))
+                or not math.isfinite(margin) or margin < reserve_m):
             continue
         prior = window[:index]
         observation_request = confirmation.get("observation_request_id")
@@ -95,11 +103,15 @@ def _confirmed_chains(window: list[dict], plans: dict) -> list[dict]:
                 for row in prior)
             mission_authorized = any(row.get("event") == "CERTIFY" and row.get("accepted") is True
                 and row.get("request_id") == mission_request
+                and isinstance(row.get("margin"), (int, float))
+                and math.isfinite(row["margin"]) and row["margin"] >= reserve_m
                 and observation["sim_time"] <= mission_plan.get("sim_time", -math.inf) <= row["sim_time"]
                 for row in prior)
             if (recovery_plan.get("intent") not in (None, "mission") and recovery_authorized
                     and mission_plan.get("intent") == "mission" and mission_authorized
-                    and confirmation.get("information_before") == observation.get("information_before")
+                    and confirmation.get("information_before") == (
+                        observation.get("information_step_before")
+                        or observation.get("information_before"))
                     and confirmation.get("information_after") == observation.get("information_after")):
                 chains.append(dict(observation_request_id=observation_request,
                                    mission_request_id=mission_request,
@@ -180,7 +192,7 @@ def analyze(events: list[dict], telemetry: list[dict], *, reserve_m: float,
             "recovery_step_done_events": len(step_done),
             "new_observation_events": len(observations),
             "recovery_confirmed_events": len(confirmed),
-            "confirmed_information_chains": _confirmed_chains(window, plans),
+            "confirmed_information_chains": _confirmed_chains(window, plans, reserve_m),
             "observation_intent": observation_intent,
             "maximum_truth_displacement_m": maximum_displacement,
             "maximum_truth_xy_displacement_m": maximum_xy_displacement,
@@ -254,7 +266,7 @@ def analyze(events: list[dict], telemetry: list[dict], *, reserve_m: float,
             for cycle in cycles
         ),
         "mission_reauthorized_after_observation": mission_retries_accepted > 0,
-        "measured_margin_improved": bool(beneficial_confirmations),
+        "current_margin_certified": confirmed_chains > 0,
         "correlated_information_recovery_chain": confirmed_chains > 0,
     }
     hypotheses = [
@@ -292,6 +304,7 @@ def analyze(events: list[dict], telemetry: list[dict], *, reserve_m: float,
         "limitations": [
             "This audit links recorded events and truth-only evaluation telemetry; it does not alter flight evidence.",
             "Forecast and final certification margins may use different trajectories and critical directions.",
+            "Historical margin changes are diagnostic; recovery requires information gain and a current absolute reserve.",
             "A recovery hypothesis is not success without RECOVERY_CONFIRMED and a subsequently authorized mission trajectory.",
         ],
     }

@@ -34,6 +34,8 @@
 // POSSIBILITY OF SUCH DAMAGE.
 #include <omp.h>
 #include <algorithm>
+#include <array>
+#include <cstring>
 #include <mutex>
 #include <math.h>
 #include <thread>
@@ -47,6 +49,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <Eigen/Core>
 #include <Eigen/Eigenvalues>
+#include "observable_translation.h"
 #include "IMU_Processing.hpp"
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
@@ -79,7 +82,12 @@ double match_time = 0, solve_time = 0, solve_const_H_time = 0;
 int    kdtree_size_st = 0, kdtree_size_end = 0, add_point_size = 0, kdtree_delete_counter = 0;
 bool   runtime_pos_log = false, pcd_save_en = false, time_sync_en = false, extrinsic_est_en = true, path_en = true;
 bool   integrity_geometry_en = false;
+bool matching_diagnostics_en = false;
+// x/y/z, status (1 neighbour reject, 2 plane reject, 3 residual reject, 4 accepted),
+// normal x/y/z, residual, support eigenvalues, furthest neighbour distance, weight.
+std::vector<std::array<float, 13>> matching_diagnostics;
 double integrity_residual_scale = 0.08, integrity_geometry_floor = 0.05, integrity_eigen_epsilon = 1.0e-9;
+double minimum_translation_information_fraction = 0.0;
 string integrity_geometry_topic = "/localization/geometry";
 M3D integrity_information = M3D::Zero();
 V3D integrity_eigenvalues = Zero3d;
@@ -449,12 +457,19 @@ bool sync_packages(MeasureGroup &meas)
 int process_increments = 0;
 void map_incremental()
 {
+    const bool map_observable = !integrity_geometry_en
+        || minimum_translation_information_fraction <= 0.0
+        || localization_map_update_allowed(integrity_eigenvalues,
+                                            minimum_translation_information_fraction);
     PointVector PointToAdd;
     PointVector PointNoNeedDownsample;
     PointToAdd.reserve(feats_down_size);
     PointNoNeedDownsample.reserve(feats_down_size);
     for (int i = 0; i < feats_down_size; i++)
     {
+        // Weak geometry cannot extend the map with unsupported returns. It
+        // may densify an already matched plane to retain recovery support.
+        if (!map_observable && !point_selected_surf[i]) continue;
         /* transform to world frame */
         pointBodyToWorld(&(feats_down_body->points[i]), &(feats_down_world->points[i]));
         /* decide if need add to map */
@@ -714,6 +729,7 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
     laserCloudOri->clear(); 
     corr_normvect->clear(); 
     total_residual = 0.0; 
+    if (matching_diagnostics_en) matching_diagnostics.resize(feats_down_size);
 
     /** closest surface search and residual computation **/
     #ifdef MP_EN
@@ -732,6 +748,15 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
         point_world.y = p_global(1);
         point_world.z = p_global(2);
         point_world.intensity = point_body.intensity;
+        if (matching_diagnostics_en)
+        {
+            auto &diagnostic = matching_diagnostics[i];
+            diagnostic.fill(std::numeric_limits<float>::quiet_NaN());
+            diagnostic[0] = point_world.x;
+            diagnostic[1] = point_world.y;
+            diagnostic[2] = point_world.z;
+            diagnostic[3] = 1.0f;
+        }
 
         vector<float> pointSearchSqDis(NUM_MATCH_POINTS);
 
@@ -744,7 +769,33 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
             point_selected_surf[i] = points_near.size() < NUM_MATCH_POINTS ? false : pointSearchSqDis[NUM_MATCH_POINTS - 1] > 5 ? false : true;
         }
 
+        if (matching_diagnostics_en && !points_near.empty())
+        {
+            auto &diagnostic = matching_diagnostics[i];
+            V3D centroid = Zero3d;
+            double maximum_distance = 0.0;
+            for (const auto &point : points_near)
+            {
+                const V3D near(point.x, point.y, point.z);
+                centroid += near;
+                maximum_distance = std::max(maximum_distance, (near - p_global).norm());
+            }
+            centroid /= static_cast<double>(points_near.size());
+            M3D covariance = M3D::Zero();
+            for (const auto &point : points_near)
+            {
+                const V3D delta = V3D(point.x, point.y, point.z) - centroid;
+                covariance.noalias() += delta * delta.transpose();
+            }
+            covariance /= static_cast<double>(points_near.size());
+            Eigen::SelfAdjointEigenSolver<M3D> solver(covariance);
+            if (solver.info() == Eigen::Success)
+                for (int axis = 0; axis < 3; ++axis)
+                    diagnostic[8 + axis] = static_cast<float>(solver.eigenvalues()(axis));
+            diagnostic[11] = static_cast<float>(maximum_distance);
+        }
         if (!point_selected_surf[i]) continue;
+        if (matching_diagnostics_en) matching_diagnostics[i][3] = 2.0f;
 
         VF(4) pabcd;
         point_selected_surf[i] = false;
@@ -752,6 +803,13 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
         {
             float pd2 = pabcd(0) * point_world.x + pabcd(1) * point_world.y + pabcd(2) * point_world.z + pabcd(3);
             float s = 1 - 0.9 * fabs(pd2) / sqrt(p_body.norm());
+            if (matching_diagnostics_en)
+            {
+                auto &diagnostic = matching_diagnostics[i];
+                diagnostic[3] = 3.0f;
+                for (int axis = 0; axis < 3; ++axis) diagnostic[4 + axis] = pabcd(axis);
+                diagnostic[7] = pd2;
+            }
 
             if (s > 0.9)
             {
@@ -790,6 +848,13 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
                 normvec->points[i].curvature = static_cast<float>(std::clamp(
                     geometry_weight, integrity_geometry_floor, 1.0));
                 res_last[i] = abs(pd2);
+                if (matching_diagnostics_en)
+                {
+                    auto &diagnostic = matching_diagnostics[i];
+                    diagnostic[3] = 4.0f;
+                    const double scaled = pd2 / std::max(integrity_residual_scale, 1.0e-9);
+                    diagnostic[12] = normvec->points[i].curvature / (1.0 + scaled * scaled);
+                }
             }
         }
     }
@@ -897,6 +962,11 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
         }
         integrity_residual_rms = std::sqrt(
             residual_square_sum / std::max(1, effct_feat_num));
+        // Remove noisy translation sensitivity in measured unobservable axes.
+        // Published geometry stays unprojected so health monitoring sees loss.
+        const M3D projector = observable_translation_projector(
+            integrity_information, minimum_translation_information_fraction);
+        ekfom_data.h_x.leftCols(3) = (ekfom_data.h_x.leftCols(3) * projector).eval();
     }
     solve_time += omp_get_wtime() - solve_start_;
 }
@@ -940,7 +1010,9 @@ public:
         this->declare_parameter<bool>("feature_extract_enable", false);
         this->declare_parameter<bool>("runtime_pos_log_enable", false);
         this->declare_parameter<bool>("mapping.extrinsic_est_en", true);
+        this->declare_parameter<double>("mapping.minimum_translation_information_fraction", 0.0);
         this->declare_parameter<bool>("integrity_geometry.enable", false);
+        this->declare_parameter<bool>("integrity_geometry.matching_diagnostics", false);
         this->declare_parameter<string>("integrity_geometry.topic", "/localization/geometry");
         this->declare_parameter<double>("integrity_geometry.residual_scale", 0.08);
         this->declare_parameter<double>("integrity_geometry.geometry_floor", 0.05);
@@ -984,7 +1056,14 @@ public:
         this->get_parameter_or<bool>("feature_extract_enable", p_pre->feature_enabled, false);
         this->get_parameter_or<bool>("runtime_pos_log_enable", runtime_pos_log, 0);
         this->get_parameter_or<bool>("mapping.extrinsic_est_en", extrinsic_est_en, true);
+        this->get_parameter_or<double>("mapping.minimum_translation_information_fraction",
+            minimum_translation_information_fraction, 0.0);
+        if (!std::isfinite(minimum_translation_information_fraction)
+            || minimum_translation_information_fraction < 0.0
+            || minimum_translation_information_fraction > 1.0 / 3.0)
+            throw std::invalid_argument("invalid minimum translation information fraction");
         this->get_parameter_or<bool>("integrity_geometry.enable", integrity_geometry_en, false);
+        this->get_parameter_or<bool>("integrity_geometry.matching_diagnostics", matching_diagnostics_en, false);
         this->get_parameter_or<string>("integrity_geometry.topic", integrity_geometry_topic, "/localization/geometry");
         this->get_parameter_or<double>("integrity_geometry.residual_scale", integrity_residual_scale, 0.08);
         this->get_parameter_or<double>("integrity_geometry.geometry_floor", integrity_geometry_floor, 0.05);
@@ -1057,6 +1136,8 @@ public:
         pubPath_ = this->create_publisher<nav_msgs::msg::Path>("/path", 20);
         if (integrity_geometry_en)
             pubLocalizationGeometry_ = this->create_publisher<xq_sim_interfaces::msg::LocalizationGeometry>(integrity_geometry_topic, 20);
+        if (matching_diagnostics_en)
+            pubMatchingDiagnostics_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/localization/matching", 5);
         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
         //------------------------------------------------------------------------------------------------------
@@ -1187,6 +1268,7 @@ private:
             /******* Publish odometry *******/
             publish_odometry(pubOdomAftMapped_, tf_broadcaster_);
             publish_localization_geometry();
+            publish_matching_diagnostics();
 
             /*** add the feature points to map kdtree ***/
             t3 = omp_get_wtime();
@@ -1254,6 +1336,36 @@ private:
     }
 
 private:
+    void publish_matching_diagnostics()
+    {
+        if (!matching_diagnostics_en || !pubMatchingDiagnostics_) return;
+        sensor_msgs::msg::PointCloud2 message;
+        message.header.stamp = get_ros_time(lidar_end_time);
+        message.header.frame_id = map_frame_id;
+        message.height = 1;
+        message.width = matching_diagnostics.size();
+        message.point_step = 13 * sizeof(float);
+        message.row_step = message.point_step * message.width;
+        message.is_bigendian = false;
+        message.is_dense = false;
+        const std::array<std::string, 13> names = {"x", "y", "z", "status", "normal_x", "normal_y", "normal_z",
+            "residual", "support_lambda0", "support_lambda1", "support_lambda2", "neighbor_distance", "weight"};
+        for (size_t i = 0; i < names.size(); ++i)
+        {
+            sensor_msgs::msg::PointField field;
+            field.name = names[i];
+            field.offset = i * sizeof(float);
+            field.datatype = sensor_msgs::msg::PointField::FLOAT32;
+            field.count = 1;
+            message.fields.push_back(field);
+        }
+        message.data.resize(message.row_step);
+        for (size_t i = 0; i < matching_diagnostics.size(); ++i)
+            std::memcpy(message.data.data() + i * message.point_step,
+                        matching_diagnostics[i].data(), message.point_step);
+        pubMatchingDiagnostics_->publish(message);
+    }
+
     void publish_localization_geometry()
     {
         if (!integrity_geometry_en || !pubLocalizationGeometry_) return;
@@ -1282,6 +1394,7 @@ private:
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath_;
     rclcpp::Publisher<xq_sim_interfaces::msg::LocalizationGeometry>::SharedPtr pubLocalizationGeometry_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubMatchingDiagnostics_;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_pcl_pc_;
     rclcpp::Subscription<xq_livox_interfaces::msg::CustomMsg>::SharedPtr sub_pcl_livox_;

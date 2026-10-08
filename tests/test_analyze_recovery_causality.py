@@ -8,11 +8,13 @@ def event(kind, time, request, **values):
 
 
 def information_evidence():
-    return dict(information_improved=True,
+    return dict(information_improved=True, after=dict(margin=0.15),
                 information_before=dict(direction=[1.0, 0.0, 0.0], stamp_s=1.0,
-                                        variance_m2=1e-4, geometric_information=20.0),
+                                        variance_m2=1e-4, geometric_information=20.0,
+                                        raw_stamp_s=1.0, raw_geometric_information=2.0),
                 information_after=dict(direction=[1.0, 0.0, 0.0], stamp_s=2.05,
-                                       variance_m2=8e-5, geometric_information=30.0))
+                                       variance_m2=8e-5, geometric_information=30.0,
+                                       raw_stamp_s=2.05, raw_geometric_information=3.0))
 
 
 def test_audit_links_forecast_rejection_hover_and_failed_mission_retry():
@@ -82,30 +84,38 @@ def test_audit_rejects_confirmation_without_measured_benefit():
                  {"sim_time": 2.1, "truth": [0, 0.4, 0], "intent": "up_offset"}]
     report = analyze(events, telemetry, reserve_m=0.1, estimator_memory_horizon_s=3.0)
     assert report["mechanism_status"] == "NOT_DEMONSTRATED"
-    assert not report["mechanism_checks"]["measured_margin_improved"]
+    assert not report["mechanism_checks"]["current_margin_certified"]
 
 
 def test_missing_information_confirmation_does_not_pass():
     report = analyze([event("RECOVERY_CONFIRMED", 2.3, 3, delta_margin=0.05)], [],
                      reserve_m=0.1, estimator_memory_horizon_s=3.0)
-    assert not report["mechanism_checks"]["measured_margin_improved"]
+    assert not report["mechanism_checks"]["current_margin_certified"]
     assert report["mechanism_status"] == "NOT_DEMONSTRATED"
 
 
 def test_information_chain_requires_same_request_session_and_post_step_stamp():
+    observation = information_evidence()
+    observation["information_step_before"] = dict(
+        direction=[1.0, 0.0, 0.0], stamp_s=1.5, variance_m2=1.1e-4,
+        geometric_information=15.0, raw_stamp_s=1.5, raw_geometric_information=1.5,
+    )
+    confirmation = information_evidence()
+    confirmation["information_before"] = observation["information_step_before"]
     events = [
         event("RECOVERY_FORECAST", 1.0, 1, candidates=[]),
         event("PLAN_REQUEST", 1.1, 2, intent="up_offset"),
         event("CERTIFY", 1.2, 2, accepted=True, margin=0.2),
         event("RECOVERY_STEP_DONE", 2.0, 2),
-        event("NEW_OBSERVATION", 2.1, 2, **information_evidence()),
+        event("NEW_OBSERVATION", 2.1, 2, **observation),
         event("PLAN_REQUEST", 2.2, 3, intent="mission"),
         event("CERTIFY", 2.3, 3, accepted=True, margin=0.15),
         event("RECOVERY_CONFIRMED", 2.3, 3, delta_margin=0.05,
-              observation_request_id=2, **information_evidence()),
+              observation_request_id=2, **confirmation),
     ]
     assert analyze(events, [], reserve_m=0.1, estimator_memory_horizon_s=3.0)["mechanism_status"] == "PASS"
-    for mutation in ("session", "request", "stamp", "information", "variance", "direction", "cross_cycle"):
+    for mutation in ("session", "request", "stamp", "information", "variance", "direction", "cross_cycle",
+                     "raw_information", "raw_stamp", "current_margin", "certificate_margin"):
         broken = deepcopy(events)
         if mutation == "session":
             broken[2]["session_id"] = "other"
@@ -113,6 +123,10 @@ def test_information_chain_requires_same_request_session_and_post_step_stamp():
             broken[3]["request_id"] = 99
         elif mutation == "cross_cycle":
             broken.insert(4, event("RECOVERY_FORECAST", 2.05, 2, candidates=[]))
+        elif mutation == "current_margin":
+            broken[-1]["after"]["margin"] = 0.05
+        elif mutation == "certificate_margin":
+            broken[-2]["margin"] = 0.05
         else:
             after = broken[4]["information_after"]
             if mutation == "stamp":
@@ -123,5 +137,26 @@ def test_information_chain_requires_same_request_session_and_post_step_stamp():
                 after["variance_m2"] = 1e-4 - 5e-7
             elif mutation == "direction":
                 after["direction"] = [0.0, 1.0, 0.0]
+            elif mutation == "raw_information":
+                after["raw_geometric_information"] = 1.0
+            elif mutation == "raw_stamp":
+                after["raw_stamp_s"] = 1.0
         report = analyze(broken, [], reserve_m=0.1, estimator_memory_horizon_s=3.0)
         assert report["mechanism_status"] == "NOT_DEMONSTRATED", mutation
+
+
+def test_information_chain_with_negative_historical_margin_still_needs_current_reserve():
+    events = [
+        event("RECOVERY_FORECAST", 1.0, 1, candidates=[]),
+        event("PLAN_REQUEST", 1.1, 2, intent="up_offset"),
+        event("CERTIFY", 1.2, 2, accepted=True, margin=0.2),
+        event("RECOVERY_STEP_DONE", 2.0, 2),
+        event("NEW_OBSERVATION", 2.1, 2, **information_evidence()),
+        event("PLAN_REQUEST", 2.2, 3, intent="mission"),
+        event("CERTIFY", 2.3, 3, accepted=True, margin=0.15),
+        event("RECOVERY_CONFIRMED", 2.3, 3, delta_margin=-0.05,
+              observation_request_id=2, **information_evidence()),
+    ]
+    report = analyze(events, [], reserve_m=0.1, estimator_memory_horizon_s=3.0)
+    assert report["mechanism_status"] == "PASS"
+    assert report["observations"]["positive_margin_recovery_confirmations"] == 0

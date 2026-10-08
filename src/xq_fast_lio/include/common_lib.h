@@ -3,6 +3,7 @@
 
 #include <so3_math.h>
 #include <Eigen/Eigen>
+#include <centered_plane.h>
 #include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
 #include <xq_fast_lio/msg/pose6_d.hpp>
@@ -223,12 +224,8 @@ float calc_dist(PointType p1, PointType p2){
 template<typename T>
 bool esti_plane(Matrix<T, 4, 1> &pca_result, const PointVector &point, const T &threshold)
 {
+    if (point.size() < NUM_MATCH_POINTS) return false;
     Matrix<T, NUM_MATCH_POINTS, 3> A;
-    Matrix<T, NUM_MATCH_POINTS, 1> b;
-    A.setZero();
-    b.setOnes();
-    b *= -1.0f;
-
     for (int j = 0; j < NUM_MATCH_POINTS; j++)
     {
         A(j,0) = point[j].x;
@@ -236,22 +233,7 @@ bool esti_plane(Matrix<T, 4, 1> &pca_result, const PointVector &point, const T &
         A(j,2) = point[j].z;
     }
 
-    Matrix<T, 3, 1> normvec = A.colPivHouseholderQr().solve(b);
-
-    T n = normvec.norm();
-    pca_result(0) = normvec(0) / n;
-    pca_result(1) = normvec(1) / n;
-    pca_result(2) = normvec(2) / n;
-    pca_result(3) = 1.0 / n;
-
-    for (int j = 0; j < NUM_MATCH_POINTS; j++)
-    {
-        if (fabs(pca_result(0) * point[j].x + pca_result(1) * point[j].y + pca_result(2) * point[j].z + pca_result(3)) > threshold)
-        {
-            return false;
-        }
-    }
-    return true;
+    return fit_centered_plane(A, pca_result, threshold);
 }
 
 double get_time_sec(const builtin_interfaces::msg::Time &time)

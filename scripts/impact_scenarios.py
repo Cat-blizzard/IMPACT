@@ -12,7 +12,7 @@ def scenario_geometry(name, seed):
     rng = random.Random(seed)
     start_wall_x = {
         "normal": -20.0,
-        "recoverable": -35.0,
+        "recoverable": -18.0,
         "unrecoverable": -60.0,
     }[name]
     boxes = [
@@ -22,20 +22,27 @@ def scenario_geometry(name, seed):
         dict(name="ceiling", center=[20, 0, 10.1], size=[160, 4.4, 0.2]),
         dict(name="left_wall", center=[20, 2.1, 2], size=[160, 0.2, 4.2]),
         dict(name="right_wall", center=[20, -2.1, 2], size=[160, 0.2, 4.2]),
-        # The Mid-360 model has a 40 m range.  The recoverable arm deliberately
-        # loses both longitudinal anchors after the entry wall leaves range;
-        # its end wall is outside the sensor envelope for the whole task.  The
-        # recovery motion must therefore produce a fresh information update
-        # before the mission can be re-authorized.  The normal arm keeps the
-        # closer cap, while unrecoverable has no in-range cap as well.
-        dict(name="end_wall", center=[30 if name == "normal" else 100, 0, 2],
-             size=[0.2, 4.4, 4.2]),
-        # At the recoverable 35 m placement, the original 4.2 m wall yielded
-        # fewer than 110 returns per scan during takeoff. Extend only its
-        # vertical aperture so the longitudinal anchor is measurable without
-        # changing where it leaves the 40 m sensor range.
+        # The shortened recoverable LiDAR range creates a bounded overlap:
+        # entry support leaves while the forward cap first becomes measurable.
+        dict(name="end_wall", center=[{"normal": 30, "recoverable": 26.5,
+                                      "unrecoverable": 100}[name], 0,
+                                      5 if name == "recoverable" else 2],
+             size=[0.2, 4.4, 10.0 if name == "recoverable" else 4.2]),
+        # Extend the start wall's vertical aperture so the entry-side anchor
+        # remains measurable during takeoff without changing its range exit.
         dict(name="start_wall", center=[start_wall_x, 0, 5], size=[0.2, 4.4, 10.0]),
     ]
+    if name == "recoverable":
+        # A real elevated face can re-enter the vertical LiDAR aperture after
+        # a short upward step, without crossing the longitudinal range gap.
+        # Keep a real longitudinal face inside the recovery sensor envelope.
+        # Its lower edge remains above the certified flight/braking envelope,
+        # while the wider face gives FAST-LIO enough accepted support after
+        # the bounded vertical recovery action.
+        # Preserve the entry-facing plane at x=5.7 m. Separate the opposing
+        # face so nearest-neighbour plane support does not mix both thin skins.
+        boxes.append(dict(name="overhead_anchor", center=[6.0, 0., 4.6],
+                          size=[0.6, 3.6, 1.0]))
     # Keep the recoverable corridor geometrically simple so any stop is caused
     # by the intentional loss of longitudinal information, rather than a
     # wall-attached obstacle or a changing collision route.
@@ -46,64 +53,39 @@ def scenario_geometry(name, seed):
                           size=[.3, .3, 2.7], yaw=rng.uniform(.35,.8)))
     anchor_policy = {
         "normal": "full_route",
-        "recoverable": "entry_only",
+        "recoverable": "bounded_cap_overlap",
         "unrecoverable": "none",
     }[name]
     anchor_interval = {
         "normal": [0.0, 12.0],
-        "recoverable": [0.0, 5.0],
+        "recoverable": [0.0, 4.1],
         "unrecoverable": None,
     }[name]
-    return dict(schema_version=6, scenario=name, seed=seed, boxes=boxes,
+    return dict(schema_version=8, scenario=name, seed=seed, boxes=boxes,
                 goal_lio_m=[12.,0.,2.], actual_goal_tolerance_m=0.45,
-                # Recovery cycles are bounded by the supervisor's execution
-                # stall guard, but several valid information-gathering steps
-                # can consume more than the normal 180 s task budget.  Keep
-                # the truth gate fixed and allocate only this scenario a
-                # larger completion window.
-                # The recovery arm deliberately spends time rebuilding an
-                # estimator margin before it is allowed to resume forward
-                # motion.  On the GPU SITL path the bounded 0.30 m/s
-                # execution envelope then needs a little more than five
-                # minutes to cover the remaining route.  Keep the timeout
-                # long enough to observe completion while retaining the
-                # supervisor's 20 s no-progress fail-closed guard.
+                # Recovery has extra task time but a separate short health
+                # deadline; neither budget changes independent truth acceptance.
                 task_timeout_sim_s=420.0 if name == "recoverable" else 180.0,
-                # The independent truth gate remains 0.45 m.  Recoverable
-                # ExternalNav can retain a bounded estimator offset after the
-                # recovery step, so the controller's completion gate includes
-                # that measured execution envelope without weakening truth
-                # evaluation.
-                # The recoverable estimator carries a bounded ~0.5 m offset
-                # after the recovery observation.  Requiring the controller
-                # to enter a 0.55 m LIO gate leaves room for that measured
-                # offset while triggering LAND before the vehicle can drift
-                # beyond the independent 0.45 m truth gate.
-                # The LIO-to-truth execution envelope is measured separately
-                # by the evaluator.  A slightly wider recoverable controller
-                # gate lets the FCU brake before its repeatable ~0.65 m LIO
-                # position lag carries the physical vehicle past the truth
-                # endpoint; the independent evaluator remains fixed at 0.45 m.
-                # Keep the controller's completion gate just above the
-                # independent truth gate.  The GPU ExternalNav stream carries
-                # a repeatable ~0.65 m longitudinal lag; a 0.60 m gate can
-                # land while the lateral component is still outside the
-                # independent 0.45 m truth ball on some seeds.  A 0.50 m gate
-                # gives the final certified segment enough time to close that
-                # lateral error while retaining the measured braking margin.
-                mission_goal_tolerance_m=0.50 if name == "recoverable" else 0.45,
+                # Leave room for estimator and controller error before the
+                # independent 0.45 m truth gate. This is common to all arms.
+                mission_goal_tolerance_m=0.30,
                 start_world_m=[0.,0.,.195], start_yaw=0.,
                 sensor_observability_design={
-                    "lidar_range_m": 40.0,
+                    "lidar_range_m": 22.0 if name == "recoverable" else 40.0,
                     "route_x_m": [0.0, 12.0],
                     "longitudinal_caps_outside_range": name == "unrecoverable",
                     "start_anchor_policy": anchor_policy,
                     "start_anchor_visible_route_x_m": anchor_interval,
+                    "cap_intervals_are_range_bounds_not_occlusion_proof": True,
                     "start_anchor_height_m": 10.0,
                     "ceiling_supplies_vertical_plane": True,
                     "ceiling_bottom_z_m": 10.0,
                     "certified_flight_max_z_m": 2.9,
                     "scenario_features_supply_longitudinal_planes": name == "normal",
+                    "elevated_anchor_reenters_vertical_aperture": name == "recoverable",
+                    "forward_anchor_visible_route_x_m": (
+                        [4.5, 12.0] if name == "recoverable" else None
+                    ),
                 },
                 seed_effect="Gazebo simulator and sensor RNG plus declared feature geometry jitter",
                 outcome="UNVERIFIED", ground_truth_policy="evaluator_only")
@@ -123,6 +105,8 @@ def generate(root: Path, output: Path, name: str, seed: int, sensor_noise_std_m:
     if noise is None:
         raise ValueError("Mid-360 Gazebo noise element is missing")
     noise.text = str(sensor_noise_std_m)
+    model_tree.find(".//sensor[@name='xq_mid360_lidar']/lidar/range/max").text = str(
+        data["sensor_observability_design"]["lidar_range_m"])
     model_tree.write(model_dir / "model.sdf", encoding="utf-8", xml_declaration=True)
     data["sensor_noise_std_m"] = sensor_noise_std_m
     data["gazebo_seed"] = seed

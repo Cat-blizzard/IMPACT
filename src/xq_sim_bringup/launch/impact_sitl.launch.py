@@ -1,5 +1,6 @@
 """P16 static point-goal task with EGO, final certification and ArduPilot actuation."""
 import json
+import os
 import runpy
 from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
@@ -23,8 +24,7 @@ def setup(context):
     # supervisor still fail-closes after 20 s without measured progress.
     parameters = runpy.run_path(str(root / "launch/xq_p5_baseline.launch.py"))["baseline_ego_parameters"]()
     # Recovery must leave enough braking and sensing time after the first
-    # integrity rejection.  The normal arm keeps the validated 0.65 m/s
-    # envelope; recovery uses the same bounded speed as the conservative arm.
+    # integrity rejection. The same bound applies to every certified segment.
     speed = 0.3 if strategy in ("conservative", "recovery") else 0.65
     # Keep EGO's polynomial timing numerically well conditioned at the low
     # safety speed.  Generate from the validated nominal dynamics, then apply
@@ -56,6 +56,8 @@ def setup(context):
         Node(package="xq_fast_lio", executable="fastlio_mapping", name="xq_fast_lio",
               parameters=[str(lio / "config/xq_p4.yaml"), {"use_sim_time": True,
                   "integrity_geometry.enable": True, "publish.scan_publish_en": True,
+                  "integrity_geometry.matching_diagnostics": os.environ.get("IMPACT_MATCHING_DIAGNOSTICS") == "1",
+                  "mapping.minimum_translation_information_fraction": 0.02,
                   "publish.dense_publish_en": True}], output="screen"),
         autonomy("xq_p4_external_nav", sim=False),
         # Frontier retains its legacy exploration view, but P16 collision checks
@@ -69,6 +71,7 @@ def setup(context):
         }),
         autonomy("xq_p10_information_map", {
             "publish_period_s": 0.2,
+            "minimum_weak_fraction": 0.02,
             # Recovery needs a timely information snapshot.  Bounding the
             # serialized surfel set avoids multi-second callback backlog on
             # the GPU run while retaining enough geometry for candidate ranking.
@@ -98,7 +101,19 @@ def setup(context):
             # while giving this explicitly bounded recovery arm 45 s to reach
             # its forecast/observation cycle.
             execution_progress_timeout_s=(45.0 if scenario.get("scenario") == "recoverable" else 20.0),
+            # A failed first maneuver plus the next bounded maneuver and its
+            # three-second information window need more than the eight-second
+            # continuous-loss deadline. The recovery arm remains fail-closed
+            # after this bounded extension; other scenarios keep the default.
+            localization_recovery_timeout_s=(12.0 if scenario.get("scenario") == "recoverable" else 8.0),
             mission_speed_scale=mission_speed_scale,
+            localization_sensor_range_m=scenario["sensor_observability_design"]["lidar_range_m"],
+            recovery_release_waypoint=(
+                scenario["sensor_observability_design"].get("recovery_release_waypoint_lio_m")
+                or [float("nan")] * 3
+            ),
+            recovery_release_speed_scale=mission_speed_scale,
+            recovery_observation_window_s=config["configuration"]["integrity_information_memory_horizon_s"],
             event_file=str(run / "events.jsonl"))),
         autonomy("impact_arbiter", dict(session_id=session)),
         autonomy("impact_evaluator", dict(result_dir=str(run), scenario_file=str(run / "scenario.json"))),

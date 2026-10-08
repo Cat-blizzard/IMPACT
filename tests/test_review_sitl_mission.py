@@ -6,6 +6,7 @@ import pytest
 
 pytest.importorskip("rclpy")
 from mavros_msgs.msg import State, SysStatus
+from xq_sim_interfaces.msg import LocalizationGeometry
 
 from xq_autonomy.p4_mission_node import ConsecutiveHealthGate, PREARM_CHECK, VISION_POSITION
 from xq_autonomy.sitl_mission_node import SITLMission
@@ -18,9 +19,12 @@ def mission(tmp_path, monkeypatch):
     monkeypatch.setattr(mission_module.time, "monotonic", lambda: clock.wall)
     node = object.__new__(SITLMission)
     params = dict(result_file=str(tmp_path / "mission.json"), task_timeout_sim_s=180.0,
+        control_status_timeout_s=1.0,
         mission_timeout_s=700.0, health_status_max_age_s=0.7, health_odom_max_age_s=0.7,
         sys_status_max_age_s=2.5, fcu_state_max_age_s=2.5, health_fault_window_s=2.0,
-        failsafe_termination_timeout_s=90.0, cross_odom_max_delta_m=5.0)
+        failsafe_termination_timeout_s=90.0, cross_odom_max_delta_m=5.0,
+        geometry_max_age_s=0.7, takeoff_minimum_weak_fraction=0.02,
+        takeoff_minimum_geometry_points=30)
     node.get_parameter = lambda key: SimpleNamespace(value=params[key])
     node.get_clock = lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=int(clock.sim * 1e9)))
     node.stage_pub = SimpleNamespace(publish=lambda _: None)
@@ -45,12 +49,44 @@ def mission(tmp_path, monkeypatch):
     node.fcu_state = State(connected=True, armed=True, guided=True, mode="GUIDED")
     node.fcu_sys_status = SysStatus(sensors_enabled=PREARM_CHECK | VISION_POSITION,
                                    sensors_health=PREARM_CHECK | VISION_POSITION)
+    node.geometry = LocalizationGeometry()
+    node.geometry.header.stamp.sec = 10
+    node.geometry.header.frame_id = "xq_lio_map"
+    node.geometry.information_matrix = [10., 0., 0., 0., 10., 0., 0., 0., 10.]
+    node.geometry.effective_points = 300
+    node.geometry_wall = clock.wall
     node.health_gate = ConsecutiveHealthGate(1)
     node._event = lambda kind, detail: node.events.append(dict(kind=kind, detail=detail, phase=node.phase))
     commands = []
     node._send_command = commands.append
     node._poll_command = lambda: None
     return node, clock, params, commands
+
+
+@pytest.mark.parametrize("phase", ["WAIT_PREARM", "ARM", "TAKEOFF", "ASCEND", "HOVER"])
+def test_takeoff_health_rejects_unobservable_geometry(mission, phase):
+    node, _, _, _ = mission
+    node.phase = phase
+    node.geometry.information_matrix = [0.8, 0., 0., 0., 60., 0., 0., 0., 39.2]
+    assert "geometry_translation_unobservable" in node._health_snapshot(True)["reasons"]
+
+
+def test_geometry_loss_precedes_task_completion(mission):
+    node, _, _, _ = mission
+    node.task_status["completed"] = True
+    node.geometry_wall = 990.
+    node._tick()
+    assert not node.task_success
+    assert node.phase == "LAND"
+    assert "geometry_stale" in node.task_failure_reason
+
+
+def test_active_rank_loss_is_reserved_for_recovery(mission):
+    node, _, _, _ = mission
+    node.geometry.information_matrix = [0.8, 0., 0., 0., 60., 0., 0., 0., 39.2]
+    snapshot = node._health_snapshot(True)
+    assert "geometry_translation_unobservable" not in snapshot["reasons"]
+    assert not snapshot["localization_geometry"]["healthy"]
 
 
 @pytest.mark.parametrize("phase", ["HOVER", "ACTIVE"])
@@ -158,6 +194,7 @@ def test_stale_disarm_cannot_confirm_termination_on_timeout(mission):
 def test_task_timeout_lands_without_erasing_task_failure(mission):
     node, clock, _, _ = mission
     clock.sim = 200.0
+    node.geometry.header.stamp.sec = 200
     node._tick()
     assert node.phase == "LAND"
     assert not node.task_success
@@ -207,6 +244,20 @@ def test_preflight_failure_records_actual_reason(mission):
     result = json.loads(mission_module.Path(params["result_file"]).read_text())
     assert result["task_reason"] == "ExternalNav parameters were not verified"
     assert not result["task_success"]
+
+
+def test_preflight_refusal_preserves_geometry_reason_before_final_phase(mission):
+    node, _, params, _ = mission
+    node.phase = "VERIFY_NAV"
+    node.task_started = None
+    node.armed_seen = False
+    node.fcu_state.armed = False
+    node.geometry.information_matrix = [0.8, 0., 0., 0., 60., 0., 0., 0., 39.2]
+    node._finish("FAIL", "navigation health did not become ready")
+    result = json.loads(mission_module.Path(params["result_file"]).read_text())
+    assert not result["final_health"]["healthy"]
+    assert result["preflight_refusal"] == dict(confirmed=True, phase="VERIFY_NAV",
+        reasons=["geometry_translation_unobservable"])
 
 
 @pytest.mark.parametrize("disarmed", [False, True])

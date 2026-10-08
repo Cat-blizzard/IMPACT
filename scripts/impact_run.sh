@@ -16,6 +16,8 @@ export GZ_SIM_RESOURCE_PATH="$run/models:$IMPACT_INSTALL/xq_gz_assets/share/xq_g
 export GZ_SIM_SYSTEM_PLUGIN_PATH="$ARDUPILOT_GAZEBO_ROOT/build"
 export SDF_PATH="$GZ_SIM_RESOURCE_PATH"
 mkdir -p -- "$run/ros_logs" "$run/sitl_runtime"
+scenario_name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["scenario"])' "$run/run.json")"
+fcu_defaults="$IMPACT_INSTALL/xq_autonomy/share/xq_autonomy/config/xq_p4_extnav.parm"
 pids=()
 labels=()
 phase="init"
@@ -246,7 +248,7 @@ fi
 phase="start_sitl"
 pushd "$run/sitl_runtime" >/dev/null
 start sitl "$ARDUPILOT_ROOT/build/sitl/bin/arducopter" -S --model JSON --speedup 1 --slave 0 --wipe \
- --defaults "$ARDUPILOT_ROOT/Tools/autotest/default_params/copter.parm,$ARDUPILOT_ROOT/Tools/autotest/default_params/gazebo-iris.parm,$IMPACT_INSTALL/xq_autonomy/share/xq_autonomy/config/xq_p4_extnav.parm" \
+ --defaults "$ARDUPILOT_ROOT/Tools/autotest/default_params/copter.parm,$ARDUPILOT_ROOT/Tools/autotest/default_params/gazebo-iris.parm,$fcu_defaults" \
  --sim-address=127.0.0.1 -I0
 popd >/dev/null
 phase="wait_sitl"
@@ -273,6 +275,7 @@ wait_log mavros "Got HEARTBEAT" 60
 phase="start_rosbag"
 start rosbag ros2 bag record -o "$run/rosbag" \
  /clock /tf /tf_static /livox/lidar /livox/imu /localization/odom /localization/geometry \
+ /localization/matching \
  /cloud_registered /impact/legacy_frontier_cloud /xq/p5/navigation_map /xq/p5/exploration/status \
  /impact/information_cloud /grid_map/occupancy_inflate \
  /integrity/directional /integrity/debug /integrity/information_map \
@@ -349,12 +352,16 @@ PY
 fi
 session="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["session_id"])' "$run/run.json")"
 task_timeout="$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); s=json.load(open(sys.argv[2])); print(s.get("task_timeout_sim_s", r["configuration"]["task_timeout_sim_s"]))' "$run/run.json" "$run/scenario.json")"
+control_status_timeout="$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print(3.0 if r.get("scenario") == "recoverable" else 1.0)' "$run/run.json")"
+cross_odom_max_delta=5.0
 mission_timeout_s=700
 termination_timeout_s=90
 start mission ros2 run xq_autonomy impact_mission --ros-args \
  -p use_sim_time:=true -p session_id:="$session" -p result_file:="$run/mission.json" \
  -p mission_timeout_s:="${mission_timeout_s}.0" -p task_timeout_sim_s:="$task_timeout" \
  -p failsafe_termination_timeout_s:="${termination_timeout_s}.0" \
+ -p control_status_timeout_s:="$control_status_timeout" \
+ -p cross_odom_max_delta_m:="$cross_odom_max_delta" \
  -r /uav1/mavros/setpoint_position/local:=/impact/mission_hold
 deadline=$((SECONDS+mission_timeout_s+termination_timeout_s+20))
 while [[ ! -f "$run/mission.json" ]]; do

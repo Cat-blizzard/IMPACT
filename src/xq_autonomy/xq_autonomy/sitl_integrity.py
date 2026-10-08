@@ -202,7 +202,8 @@ def _worst_obstacle_margin(samples, obstacles, covariance, k_alpha, fixed_reserv
 def certify_final(points, knots, degree, obstacles, covariance, *, strategy,
                   k_alpha, elapsed=0.0, input_age=0.0, tracking_error=0.0,
                   speed_limit=0.65, acceleration_limit=1.0, reserve=0.10,
-                  body_radius=0.35, latency=0.15, braking_acceleration=0.7):
+                  body_radius=0.35, latency=0.15, braking_acceleration=0.7,
+                  terminal_hold=False):
     if strategy not in STRATEGIES:
         raise ValueError("unknown strategy")
     if not np.isfinite((elapsed, input_age, tracking_error)).all() or not 0 <= input_age <= 0.5:
@@ -214,8 +215,15 @@ def certify_final(points, knots, degree, obstacles, covariance, *, strategy,
         return Certification(False, "DYNAMICS", 0., 0., 0., speed, acceleration)
     # Bound inter-sample displacement and emergency stopping on every final spline.
     sample_interval = min(0.05, 0.025 / max(speed, 0.01))
-    samples = sample_bspline(points, knots, degree, sample_interval,
-                             minimum_parameter_s=float(knots[degree]) + max(0., elapsed))
+    parameter = float(knots[degree]) + max(0., elapsed)
+    end = float(knots[len(points)])
+    if terminal_hold and parameter >= end:
+        samples = sample_bspline(points, knots, degree, sample_interval,
+                                 minimum_parameter_s=end - 1e-6)[-1:]
+        speed = acceleration = 0.
+    else:
+        samples = sample_bspline(points, knots, degree, sample_interval,
+                                 minimum_parameter_s=parameter)
     stopping = speed * speed / (2 * braking_acceleration)
     reserves = (body_radius, latency + input_age, acceleration_limit, reserve, stopping)
     if not np.isfinite(reserves).all() or min(reserves) < 0:

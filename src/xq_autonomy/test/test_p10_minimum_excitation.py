@@ -147,3 +147,35 @@ def test_prediction_variance_floor_prevents_false_zero_uncertainty():
     prediction = selection.predictions[0]
     assert prediction.protection_levels.min() == pytest.approx(50.0 * np.sqrt(1.0e-5))
     assert not prediction.feasible
+
+
+def test_actual_range_edge_forecast_favors_return_to_known_anchor():
+    profiles = build_information_profile(
+        np.array([[4.1, 0., 2.], [4.6, 0., 2.25], [3.5, 0., 2.]]),
+        np.array([[-17.85, 0., 2.]]), np.array([[1., 0., 0.]]),
+        np.ones(1), np.ones(1), np.array([10.]), now=10.,
+        visibility_radius=22., age_time_constant=10., information_scale=1.,
+        range_edge_taper_m=.5)
+    assert profiles[1, 0, 0] == 0.
+    assert profiles[2, 0, 0] > profiles[0, 0, 0] > 0.
+
+
+def test_vertical_step_reobserves_known_elevated_face():
+    profiles = build_information_profile(
+        np.array([[4.4, 0., 2.2], [4.4, 0., 2.45]]),
+        np.array([[5.4, 0., 3.65]]), np.array([[1., 0., 0.]]),
+        np.ones(1), np.ones(1), np.array([10.]), now=10.,
+        visibility_radius=22., age_time_constant=10., information_scale=1.,
+        sensor_vertical_fov_rad=(-.12217304764, .90757121104), sensor_height_offset_m=.12)
+    assert profiles[0, 0, 0] == 0.
+    assert profiles[1, 0, 0] == 1.
+
+
+def test_negligible_information_gain_is_below_recovery_covariance_gate():
+    variance_before = 1.7e-5
+    weak_information = 20.0
+    variance_after = 1.0 / (1.0 / variance_before + weak_information)
+    assert variance_before - variance_after < 1.0e-6
+    strong_after = 1.0 / (1.0 / variance_before + 4000.0)
+    assert variance_before - strong_after >= 1.0e-6
+

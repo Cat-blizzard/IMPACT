@@ -1613,7 +1613,7 @@ namespace ego_planner
     iter_num_ = 0;
     int start_id = order_;
     // int end_id = this->cps_.size - order_; //Fixed end
-    int end_id = this->cps_.size; // Free end
+    int end_id = fixed_endpoint_ ? this->cps_.size - order_ : this->cps_.size;
     // 变量个数
     variable_num_ = 3 * (end_id - start_id);
 

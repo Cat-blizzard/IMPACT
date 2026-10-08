@@ -171,6 +171,9 @@ def build_information_profile(
     visibility_radius: float,
     age_time_constant: float,
     information_scale: float,
+    range_edge_taper_m: float = 0.0,
+    sensor_vertical_fov_rad: tuple[float, float] | None = None,
+    sensor_height_offset_m: float = 0.0,
 ) -> np.ndarray:
     """Build Λ-hat from nearby, recent, static local-map surfels.
 
@@ -195,18 +198,35 @@ def build_information_profile(
         raise ValueError("surfel normals must be unit vectors")
     if np.any((static < 0.0) | (static > 1.0)) or np.any((quality < 0.0) | (quality > 1.0)):
         raise ValueError("surfel confidence and quality must lie in [0, 1]")
-    if not np.isfinite((now, visibility_radius, age_time_constant, information_scale)).all():
+    if not np.isfinite((now, visibility_radius, age_time_constant, information_scale,
+                        range_edge_taper_m)).all():
         raise ValueError("information-profile parameters must be finite")
     if visibility_radius <= 0.0 or age_time_constant <= 0.0 or information_scale <= 0.0:
         raise ValueError("information-profile scales must be positive")
+    if not 0.0 <= range_edge_taper_m < visibility_radius:
+        raise ValueError("range edge taper must be nonnegative and below visibility radius")
+    if not np.isfinite(sensor_height_offset_m):
+        raise ValueError("sensor height offset must be finite")
+    if sensor_vertical_fov_rad is not None:
+        low, high = sensor_vertical_fov_rad
+        if not np.isfinite((low, high)).all() or not -np.pi / 2 <= low < high <= np.pi / 2:
+            raise ValueError("invalid sensor vertical field of view")
 
     age = np.maximum(float(now) - seen, 0.0)
     base_weights = static * quality * np.exp(-age / age_time_constant) * information_scale
     profile = np.zeros((len(samples), 3, 3), dtype=float)
     radius2 = visibility_radius * visibility_radius
     for index, sample in enumerate(samples):
-        visible = np.sum((positions - sample) ** 2, axis=1) <= radius2
+        delta = positions - sample - np.array([0., 0., sensor_height_offset_m])
+        squared_distance = np.sum(delta ** 2, axis=1)
+        visible = squared_distance <= radius2
         weights = base_weights * visible
+        if sensor_vertical_fov_rad is not None:
+            elevation = np.arctan2(delta[:, 2], np.linalg.norm(delta[:, :2], axis=1))
+            weights *= (elevation >= low) & (elevation <= high)
+        if range_edge_taper_m:
+            weights *= np.clip((visibility_radius - np.sqrt(squared_distance))
+                               / range_edge_taper_m, 0.0, 1.0)
         profile[index] = np.einsum("n,ni,nj->ij", weights, normals, normals)
     return profile
 

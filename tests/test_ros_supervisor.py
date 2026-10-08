@@ -10,7 +10,7 @@ import rclpy
 from geometry_msgs.msg import Point
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Header
-from xq_sim_interfaces.msg import DirectionalIntegrity, PlannerCandidate
+from xq_sim_interfaces.msg import DirectionalIntegrity, LocalizationGeometry, PlannerCandidate
 from xq_autonomy.p10_information_map_node import _xyz_cloud
 from xq_autonomy.sitl_supervisor_node import (
     RECOVERY_INFORMATION_VISIBILITY_RADIUS_M, RECOVERY_SETTLE_TIMEOUT_S,
@@ -38,7 +38,11 @@ def node(tmp_path):
     instance.integrity=DirectionalIntegrity()
     instance.integrity.header=instance.odom.header
     instance.integrity.integrity_covariance=(np.eye(3)*1e-12).flatten().tolist()
-    instance.received={name:time.monotonic() for name in ("odom","cloud","integrity")}
+    instance.geometry = LocalizationGeometry()
+    instance.geometry.header = instance.odom.header
+    instance.geometry.information_matrix = (np.eye(3) * 30.).flatten().tolist()
+    instance.geometry.effective_points = 300
+    instance.received={name:time.monotonic() for name in ("odom","cloud","integrity","geometry")}
     instance.test_pubs={name:[] for name in ("auth_pub","goal_pub","spline_pub","status_pub")}
     for name,values in instance.test_pubs.items():
         setattr(instance,name,SimpleNamespace(publish=values.append))
@@ -93,6 +97,143 @@ def test_active_trajectory_recertifies_current_covariance_and_revokes(node):
     assert not node.test_pubs["auth_pub"][-1].authorized
 
 
+def test_unobservable_axis_revokes_even_when_obstacle_margin_is_safe(node):
+    node.cycle.issue("mission")
+    node.candidate(candidate(node)); node.tick()
+    assert node.active is not None
+    node.geometry.information_matrix = np.diag([0.8, 60., 39.2]).flatten().tolist()
+    node.tick()
+    assert node.active is None
+    assert node.recovery_required
+    assert node.recovery_before_information["direction"] == pytest.approx([1., 0., 0.])
+    assert not node.test_pubs["auth_pub"][-1].authorized
+    node.fresh = lambda: True
+    node.now_s = lambda: 10. + node.localization_recovery_timeout
+    node.tick()
+    assert node.execution_fault["reason"] == "LOCALIZATION_UNOBSERVABLE"
+    assert node.cycle.phase == "FAIL_CLOSED"
+
+
+def test_baseline_rank_loss_terminates_without_recovery(node):
+    node.strategy = "baseline"
+    node.geometry.information_matrix = np.diag([0.8, 60., 39.2]).flatten().tolist()
+    node.tick()
+    assert node.execution_fault["reason"] == "LOCALIZATION_UNOBSERVABLE"
+    assert not node.active and not node.completed
+
+
+def test_geometry_flicker_cannot_reset_loss_deadline(node):
+    node.geometry.information_matrix = np.diag([.8, 60., 39.2]).flatten().tolist()
+    node._check_localization_health(10.)
+    node.geometry.information_matrix = (np.eye(3) * 30.).flatten().tolist()
+    node.geometry.header.stamp = ros_stamp(10.5)
+    node._check_localization_health(10.5)
+    assert node.localization_loss_since == 10.
+    node.geometry.information_matrix = np.diag([.8, 60., 39.2]).flatten().tolist()
+    node._check_localization_health(10.6)
+    node._check_localization_health(18.1)
+    assert node.execution_fault["reason"] == "LOCALIZATION_UNOBSERVABLE"
+
+
+def test_recovery_total_budget_fails_closed_even_if_geometry_is_healthy(node):
+    node.strategy = "recovery"
+    node.recovery_required = True
+    node.recovery_started_sim = 10.0
+    node.now_s = lambda: 55.0
+    node._check_localization_health(55.0)
+    assert node.execution_fault["reason"] == "RECOVERY_BUDGET_EXCEEDED"
+    assert node.cycle.phase == "FAIL_CLOSED"
+
+
+def test_repeated_recoveries_share_total_budget(node):
+    node.recovery_spent_sim = 40.0
+    node.now_s = lambda: 10.0
+    node._require_information_recovery()
+    node._check_localization_health(15.0)
+    assert node.execution_fault["reason"] == "RECOVERY_BUDGET_EXCEEDED"
+    assert node.execution_fault["elapsed_s"] == pytest.approx(45.0)
+
+
+def test_geometry_restore_requires_new_sustained_observations(node):
+    node.geometry.information_matrix = np.diag([.8, 60., 39.2]).flatten().tolist()
+    node._check_localization_health(10.)
+    node.geometry.information_matrix = (np.eye(3) * 30.).flatten().tolist()
+    node.geometry.header.stamp = ros_stamp(10.5)
+    node._check_localization_health(10.5)
+    node._check_localization_health(12.)
+    assert node.localization_loss_since == 10.
+    node.geometry.header.stamp = ros_stamp(11.6)
+    node._check_localization_health(12.)
+    assert node.localization_loss_since is None
+
+
+def test_anchor_requires_stronger_than_gate_geometry(node):
+    node.geometry.information_matrix = (np.eye(3) * 30.).flatten().tolist()
+    node._check_localization_health(10.)
+    assert node.last_healthy_position.tolist() == [0., 0., 2.]
+    node.odom.pose.pose.position.x = 1.
+    node.geometry.information_matrix = np.diag([4., 60., 36.]).flatten().tolist()
+    node._check_localization_health(10.1)
+    assert node.localization_health["healthy"] is True
+    assert node.last_healthy_position.tolist() == [0., 0., 2.]
+
+
+def test_recovery_must_reach_anchor_and_observe_a_full_memory_window(node):
+    node.cycle.issue("backtrack")
+    node.cycle.result(node.cycle.request, True)
+    node.target = np.array([.15, 0., 2.])
+    node.tick()
+    assert node.cycle.phase == "EXECUTING"
+    node.target = np.array([.05, 0., 2.])
+    node.tick()
+    assert node.cycle.phase == "OBSERVING"
+    assert node.observing_until == pytest.approx(10. + node.recovery_observation_window)
+
+
+def test_recovery_endpoint_hold_is_recertified_and_bounded(node):
+    node.cycle.issue("up_offset")
+    msg = candidate(node)
+    node.cycle.result(node.cycle.request, True)
+    node.now_s = lambda: 11.2
+    for name in ("odom", "cloud", "integrity", "geometry"):
+        getattr(node, name).header.stamp = ros_stamp(11.2)
+    result = node.certify(msg, tracking=True)
+    assert result.accepted
+    assert node.last_metrics["terminal_hold"] is True
+    node.cloud = _xyz_cloud(node.odom.header, np.array([[.3, 0., 2.]]))
+    assert not node.certify(msg, tracking=True).accepted
+    node.now_s = lambda: 19.1
+    with pytest.raises(ValueError):
+        node.certify(msg, tracking=True)
+
+
+def test_mission_expiry_does_not_receive_recovery_endpoint_hold(node):
+    node.cycle.issue("mission")
+    msg = candidate(node)
+    node.now_s = lambda: 11.2
+    with pytest.raises(ValueError):
+        node.certify(msg, tracking=True)
+
+
+def test_unapproved_goal_position_is_not_completion(node):
+    node.odom.pose.pose.position.x = node.goal[0]
+    node.tick()
+    assert not node.completed
+
+
+def test_elevated_recovery_continuation_only_requests_a_bounded_target(node):
+    node._retain_recovered_height(np.array([4.0, 0.1, 2.5]))
+    assert node.recovery_release_waypoint == pytest.approx([6.0, 0.075, 2.5], abs=0.001)
+    assert not node.active
+    assert not node.test_pubs["spline_pub"]
+    assert not node.test_pubs["auth_pub"]
+
+
+def test_nominal_height_recovery_does_not_create_an_elevated_continuation(node):
+    node._retain_recovered_height(np.array([4.0, 0.1, 2.0]))
+    assert node.recovery_release_waypoint is None
+
+
 def test_late_candidate_cannot_replace_current_recovery_request(node):
     old=node.cycle.issue("left")
     node.cycle.issue("right")
@@ -133,12 +274,13 @@ def test_observation_resumes_planning_but_needs_online_certification(node):
     node.recovery_step_request_id = node.cycle.request
     node.cycle.arrived(9.)
     node.observing_until=9.5
-    node.recovery_before=dict(AL=1.,PL=2.,margin=-1.)
+    node.recovery_before=dict(AL=10.,PL=0.,margin=10.)
     node.recovery_required = True
     node.integrity.weak_direction_map = [1., 0., 0.]
     node.integrity.information_matrix = (np.eye(3) * 30.).flatten().tolist()
     node.recovery_before_information = dict(direction=[1., 0., 0.], variance_m2=1e-4,
-        geometric_information=20., protection_m=0.1, stamp_s=9.)
+        geometric_information=20., raw_geometric_information=10., raw_stamp_s=9.,
+        protection_m=0.1, stamp_s=9.)
     node.tick()
     assert node.cycle.intent == "mission" and node.cycle.phase == "PLANNING"
     assert node.test_pubs["goal_pub"] and not node.completed
@@ -150,9 +292,10 @@ def test_observation_resumes_planning_but_needs_online_certification(node):
     assert not node.cycle.remaining
     assert event["information_improved"] is True
     assert event["information_after"]["geometric_information"] > 20.
+    assert event["delta_margin"] < 0.0
 
 
-def test_accepted_mission_after_recovery_is_not_benefit_without_margin_gain(node):
+def test_information_gain_allows_release_without_historical_margin_gain(node):
     node.cycle.issue("left")
     node.recovery_step_request_id = node.cycle.request
     node.cycle.arrived(9.)
@@ -162,23 +305,27 @@ def test_accepted_mission_after_recovery_is_not_benefit_without_margin_gain(node
     node.integrity.weak_direction_map = [1., 0., 0.]
     node.integrity.information_matrix = (np.eye(3) * 30.).flatten().tolist()
     node.recovery_before_information = dict(direction=[1., 0., 0.], variance_m2=1e-4,
-        geometric_information=20., protection_m=0.1, stamp_s=9.)
+        geometric_information=20., raw_geometric_information=10., raw_stamp_s=9.,
+        protection_m=0.1, stamp_s=9.)
     node.tick()
     node.candidate(candidate(node)); node.tick()
     rows = [json.loads(line) for line in impact.Path(node.events.name).read_text().splitlines()]
-    assert any(row["event"] == "RECOVERY_NOT_BENEFICIAL" for row in rows)
-    assert not any(row["event"] == "RECOVERY_CONFIRMED" for row in rows)
-    assert node.active is None
-    assert not node.test_pubs["spline_pub"]
-    assert not node.test_pubs["auth_pub"][-1].authorized
+    event = next(row for row in rows if row["event"] == "RECOVERY_CONFIRMED")
+    assert event["information_improved"] is True
+    assert event["delta_margin"] < 0.0
+    assert node.active is not None
+    assert node.test_pubs["spline_pub"]
+    assert node.test_pubs["auth_pub"][-1].authorized
 
 
-@pytest.mark.parametrize("evidence", ["missing", "clearance_only", "covariance_only", "stale", "no_step"])
+@pytest.mark.parametrize("evidence", ["missing", "clearance_only", "covariance_only", "stale", "no_step",
+                                     "memory_only", "raw_stale"])
 def test_mission_cannot_resume_without_new_geometric_information(node, evidence):
     node.recovery_before = dict(AL=0.1, PL=0.2, margin=-0.1)
     node.recovery_required = True
     node.recovery_before_information = dict(direction=[1., 0., 0.], variance_m2=1e-4,
-        geometric_information=20., protection_m=0.1, stamp_s=9.)
+        geometric_information=20., raw_geometric_information=10., raw_stamp_s=9.,
+        protection_m=0.1, stamp_s=9.)
     node.integrity.weak_direction_map = [1., 0., 0.]
     node.integrity.information_matrix = (np.eye(3) * 30.).flatten().tolist()
     node.cycle.issue("left")
@@ -191,6 +338,10 @@ def test_mission_cannot_resume_without_new_geometric_information(node, evidence)
         node.integrity.integrity_covariance = (np.eye(3) * 2e-4).flatten().tolist()
     elif evidence == "covariance_only":
         node.integrity.information_matrix = (np.eye(3) * 10.).flatten().tolist()
+    elif evidence == "memory_only":
+        node.geometry.information_matrix = (np.eye(3) * 5.).flatten().tolist()
+    elif evidence == "raw_stale":
+        node.recovery_before_information["raw_stamp_s"] = 10.
     else:
         node.recovery_before_information["stamp_s"] = 10.
     node.tick()

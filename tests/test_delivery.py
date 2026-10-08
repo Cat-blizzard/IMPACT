@@ -13,7 +13,8 @@ from analyze_p14_gate import recorded_world as p14_recorded_world
 
 
 @pytest.mark.parametrize("invalid", [None, "baseline_missing", "different_world",
-    "different_session", "stale_source", "incomplete", "collision", "no_information_chain"])
+    "different_session", "stale_source", "incomplete", "collision", "no_information_chain",
+    "normal_missing", "normal_fail", "refusal_missing", "never_armed_missing", "probe", "duplicate"])
 def test_development_requires_three_independent_matching_pairs(tmp_path, monkeypatch, invalid):
     horizons = []
 
@@ -23,27 +24,52 @@ def test_development_requires_three_independent_matching_pairs(tmp_path, monkeyp
 
     monkeypatch.setattr(impact, "analyze_recovery_causality", audit)
     for seed in (1000, 1001, 1002):
+      for scenario in ("normal", "recoverable", "unrecoverable"):
         for strategy in ("baseline", "recovery"):
-            if seed == 1002 and strategy == "baseline" and invalid == "baseline_missing":
+            if seed == 1002 and strategy == "baseline" and scenario == "recoverable" and invalid == "baseline_missing":
                 continue
-            path = tmp_path / f"recoverable-{strategy}-s{seed}-fixture"
-            row = dict(source_sha256="head", profile="server_gpu", scenario="recoverable",
+            if scenario == "normal" and seed == 1002 and invalid == "normal_missing":
+                continue
+            path = tmp_path / f"{scenario}-{strategy}-s{seed}-fixture"
+            mission = dict(termination_confirmed=True)
+            termination = dict(confirmed=True)
+            status = "FAIL" if scenario == "unrecoverable" or (scenario == "recoverable" and strategy == "baseline") else "PASS"
+            if scenario == "unrecoverable":
+                mission.update(status="FAIL", task_success=False,
+                    final_health=dict(healthy=False),
+                    preflight_refusal=dict(confirmed=True, reasons=["geometry_translation_unobservable"]),
+                    termination=dict(armed_seen=False, state_fresh=True, disarmed=True,
+                                     evidence="fresh_fcu_remained_disarmed"))
+                termination = dict(confirmed=False, never_armed_confirmed=True)
+                if seed == 1002 and invalid == "refusal_missing":
+                    mission["preflight_refusal"]["confirmed"] = False
+                if seed == 1002 and invalid == "never_armed_missing":
+                    termination["never_armed_confirmed"] = False
+            if scenario == "normal" and seed == 1002 and invalid == "normal_fail":
+                status = "FAIL"
+            row = dict(source_sha256="head", profile="server_gpu", scenario=scenario,
                 strategy=strategy, seed=seed, run_kind="development", completed_record=True,
-                status="FAIL" if strategy == "baseline" else "PASS",
-                session_id=f"{strategy}-{seed}", world_sha256=f"world-{seed}",
+                status=status,
+                session_id=f"{scenario}-{strategy}-{seed}", world_sha256=f"{scenario}-world-{seed}",
                 vehicle_model_sha256="vehicle", config_sha256="config", calibration_sha256="calibration",
-                cleanup=dict(passed=True), mission=dict(termination_confirmed=True),
+                cleanup=dict(passed=True), mission=mission,
                 evaluation=dict(checks=dict(collision_free=True)),
                 configuration=dict(integrity_information_memory_horizon_s=3.0))
-            if seed == 1002 and strategy == "baseline":
+            if seed == 1002 and strategy == "baseline" and scenario == "recoverable":
                 if invalid == "different_world": row["world_sha256"] = "other-world"
-                if invalid == "different_session": row["session_id"] = "recovery-1002"
+                if invalid == "different_session": row["session_id"] = "recoverable-recovery-1002"
                 if invalid == "stale_source": row["source_sha256"] = "old-head"
                 if invalid == "incomplete": row["completed_record"] = False
                 if invalid == "collision": row["evaluation"]["checks"]["collision_free"] = False
             impact.write_json(path / "run.json", row)
+            impact.write_json(path / "dataflash-termination.json", termination)
             (path / "events.jsonl").write_text("{}\n")
             (path / "telemetry.jsonl").write_text("{}\n")
+            if scenario == "recoverable" and strategy == "recovery" and seed == 1002:
+                if invalid == "probe":
+                    impact.write_json(path / "inflight-localization-loss-probe.json", {})
+                if invalid == "duplicate":
+                    impact.write_json(tmp_path / f"{scenario}-{strategy}-s{seed}-duplicate/run.json", row)
     if invalid:
         with pytest.raises(RuntimeError):
             impact.paired_development_evidence(tmp_path, "head")
@@ -51,6 +77,8 @@ def test_development_requires_three_independent_matching_pairs(tmp_path, monkeyp
         result = impact.paired_development_evidence(tmp_path, "head")
         assert result["independent_seeds"] == [1000, 1001, 1002]
         assert len(result["paired_groups"]) == 3
+        assert result["completed_tasks"] == 18
+        assert all(len(group["scenarios"]) == 3 for group in result["paired_groups"])
         assert horizons == [3.0, 3.0, 3.0]
 
 
@@ -61,7 +89,7 @@ def test_seed_changes_real_geometry_and_paired_arms_share_world(tmp_path):
     assert scenario_geometry("unrecoverable",7)["seed_effect"].startswith("Gazebo")
     shell = scenario_geometry("unrecoverable", 7)
     boxes = {box["name"]: box for box in shell["boxes"]}
-    assert shell["schema_version"] == 6
+    assert shell["schema_version"] == 8
     assert shell["actual_goal_tolerance_m"] == 0.45
     assert "ceiling" in boxes
     assert boxes["ceiling"]["center"][2] == 10.1
@@ -75,11 +103,12 @@ def test_seed_changes_real_geometry_and_paired_arms_share_world(tmp_path):
     assert next(box for box in normal["boxes"] if box["name"] == "start_wall")["center"][0] == -20.0
     assert normal["sensor_observability_design"]["start_anchor_policy"] == "full_route"
     assert normal["sensor_observability_design"]["start_anchor_visible_route_x_m"] == [0.0, 12.0]
-    assert next(box for box in recoverable["boxes"] if box["name"] == "start_wall")["center"][0] == -35.0
+    assert next(box for box in recoverable["boxes"] if box["name"] == "start_wall")["center"][0] == -18.0
     assert next(box for box in recoverable["boxes"] if box["name"] == "start_wall")["size"][2] == 10.0
-    assert recoverable["sensor_observability_design"]["start_anchor_policy"] == "entry_only"
-    assert recoverable["sensor_observability_design"]["start_anchor_visible_route_x_m"] == [0.0, 5.0]
+    assert recoverable["sensor_observability_design"]["start_anchor_policy"] == "bounded_cap_overlap"
+    assert recoverable["sensor_observability_design"]["start_anchor_visible_route_x_m"] == [0.0, 4.1]
     assert recoverable["sensor_observability_design"]["start_anchor_height_m"] == 10.0
+    assert recoverable["sensor_observability_design"]["forward_anchor_visible_route_x_m"] == [4.5, 12.0]
     assert not recoverable["sensor_observability_design"]["longitudinal_caps_outside_range"]
     generate(impact.ROOT,tmp_path,"normal",7)
     world=(tmp_path/"world.sdf").read_text()

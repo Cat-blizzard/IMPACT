@@ -93,6 +93,15 @@ def test_current_covariance_not_forecast_controls_authorization():
         certify_final(p,k,3,obstacle,np.eye(3),strategy="baseline",k_alpha=2.,input_age=.6)
 
 
+def test_information_recovery_does_not_override_current_margin_gate():
+    p, k = spline()
+    obstacle = np.array([[0.15, 0.02, 2.]])
+    result = certify_final(p, k, 3, obstacle, np.eye(3) * 1e-5,
+                           strategy="recovery", k_alpha=2., reserve=.10)
+    assert not result.accepted
+    assert result.reason in ("MARGIN", "CLEARANCE")
+
+
 def test_recovery_requires_correlated_request_and_new_observation():
     cycle=RecoveryCycle()
     first=cycle.issue("left")

@@ -252,6 +252,7 @@ def audit_dataflash_termination(run):
     armed = False
     land_complete = False
     confirmed_cycles = 0
+    messages_read = 0
     try:
         for path in paths:
             reader = DFReader.DFReader_binary(str(path))
@@ -259,6 +260,7 @@ def audit_dataflash_termination(run):
                 message = reader.recv_msg()
                 if message is None:
                     break
+                messages_read += 1
                 if message.get_type() != "EV":
                     continue
                 event_id = int(message.Id)
@@ -308,6 +310,9 @@ def audit_dataflash_termination(run):
         "files": [str(path) for path in paths],
         "events": events,
         "confirmed_flight_cycles": confirmed_cycles,
+        "messages_read": messages_read,
+        "never_armed_confirmed": bool(paths and messages_read > 0
+                                      and not any(event["id"] == 10 for event in events)),
         "armed_at_log_end": armed,
         "criterion": "ARMED followed by LAND_COMPLETE, no later NOT_LANDED, then DISARMED",
     }
@@ -320,8 +325,19 @@ def classify_outcome(exit_code, mission, evaluation, dataflash_termination=None)
         not flew
         or (dataflash_termination is not None and dataflash_termination.get("confirmed") is True)
     )
+    termination = mission.get("termination", {})
+    refusal = mission.get("preflight_refusal", {})
+    preflight_refused = bool(
+        mission.get("status") == "FAIL" and mission.get("task_success") is False
+        and refusal.get("confirmed") is True and refusal.get("reasons")
+        and termination.get("armed_seen") is False
+        and termination.get("state_fresh") is True and termination.get("disarmed") is True
+        and termination.get("evidence") == "fresh_fcu_remained_disarmed"
+        and dataflash_termination is not None
+        and dataflash_termination.get("never_armed_confirmed") is True)
     completed = bool(exit_code == 0 and mission.get("termination_confirmed") is True
-                     and independent_termination and evaluation.get("samples", 0) >= 50)
+                     and independent_termination
+                     and (evaluation.get("samples", 0) >= 50 or preflight_refused))
     success = (completed and mission.get("status") == "PASS"
                and mission.get("task_success") is True
                and evaluation.get("status") == "PASS"
@@ -473,45 +489,68 @@ def paired_development_evidence(dev_root, frozen):
     groups = []
     pair_fields = ("world_sha256", "vehicle_model_sha256", "config_sha256", "calibration_sha256")
     for seed in (1000, 1001, 1002):
-        records = {strategy: [] for strategy in ("baseline", "recovery")}
-        for strategy in records:
-            for path in sorted(dev_root.glob(f"recoverable-{strategy}-s{seed}-*")):
-                if not (path / "run.json").is_file():
-                    continue
-                row = read_json(path / "run.json")
-                if (row.get("source_sha256") != frozen or row.get("profile") != "server_gpu"
-                        or row.get("scenario") != "recoverable" or row.get("strategy") != strategy
-                        or row.get("seed") != seed or row.get("run_kind") != "development"
-                        or row.get("completed_record") is not True
-                        or row.get("cleanup", {}).get("passed") is not True
-                        or row.get("mission", {}).get("termination_confirmed") is not True
-                        or row.get("evaluation", {}).get("checks", {}).get("collision_free") is not True):
-                    continue
-                if strategy == "recovery":
-                    if row.get("status") != "PASS":
+        pairs = []
+        for scenario in ("normal", "recoverable", "unrecoverable"):
+            records = {}
+            for strategy in ("baseline", "recovery"):
+                candidates = []
+                for path in sorted(dev_root.glob(f"{scenario}-{strategy}-s{seed}-*")):
+                    if not (path / "run.json").is_file():
                         continue
-                    events = [json.loads(line) for line in (path / "events.jsonl").read_text().splitlines() if line.strip()]
-                    telemetry = [json.loads(line) for line in (path / "telemetry.jsonl").read_text().splitlines() if line.strip()]
-                    audit = analyze_recovery_causality(events, telemetry, reserve_m=0.1,
-                        estimator_memory_horizon_s=row["configuration"]["integrity_information_memory_horizon_s"])
-                    write_json(path / "recovery-causal-audit.json", audit)
-                    if audit.get("mechanism_status") != "PASS":
+                    row = read_json(path / "run.json")
+                    if (row.get("source_sha256") != frozen or row.get("profile") != "server_gpu"
+                            or row.get("scenario") != scenario or row.get("strategy") != strategy
+                            or row.get("seed") != seed or row.get("run_kind") != "development"
+                            or (path / "inflight-localization-loss-probe.json").exists()):
                         continue
-                records[strategy].append((path, row))
-        if len(records["recovery"]) != 1:
-            raise RuntimeError(f"seed {seed}: expected one passing information-confirmed recovery run, found {len(records['recovery'])}")
-        recovery_path, recovery = records["recovery"][0]
-        baselines = [(path, row) for path, row in records["baseline"]
-                     if all(recovery.get(key) and row.get(key) == recovery[key] for key in pair_fields)
-                     and row.get("session_id") != recovery.get("session_id")]
-        if not baselines:
-            raise RuntimeError(f"seed {seed}: completed, collision-free paired baseline is missing")
-        baseline_path, baseline = baselines[-1]
-        groups.append(dict(seed=seed, baseline=str(baseline_path), recovery=str(recovery_path),
-                           baseline_status=baseline.get("status"), recovery_status="PASS",
-                           world_sha256=recovery["world_sha256"],
-                           recovery_audit=str(recovery_path / "recovery-causal-audit.json")))
-    return dict(root=str(dev_root), paired_groups=groups, independent_seeds=[1000, 1001, 1002])
+                    if row.get("completed_record") is True:
+                        candidates.append((path, row))
+                if len(candidates) != 1:
+                    raise RuntimeError(f"seed {seed} {scenario}/{strategy}: expected one completed task, found {len(candidates)}")
+                path, row = candidates[0]
+                if (row.get("cleanup", {}).get("passed") is not True
+                        or row.get("mission", {}).get("termination_confirmed") is not True):
+                    raise RuntimeError(f"seed {seed} {scenario}/{strategy}: cleanup or termination failed")
+                termination_path = path / "dataflash-termination.json"
+                termination = read_json(termination_path) if termination_path.is_file() else {}
+                if scenario == "unrecoverable":
+                    mission = row.get("mission", {})
+                    refusal = mission.get("preflight_refusal", {})
+                    if (row.get("status") != "FAIL" or refusal.get("confirmed") is not True
+                            or "geometry_translation_unobservable" not in refusal.get("reasons", [])
+                            or mission.get("final_health", {}).get("healthy") is not False
+                            or termination.get("never_armed_confirmed") is not True
+                            or classify_outcome(0, mission, row.get("evaluation", {}), termination)["completed_record"] is not True):
+                        raise RuntimeError(f"seed {seed} {scenario}/{strategy}: explicit never-armed geometry refusal missing")
+                else:
+                    if (row.get("evaluation", {}).get("checks", {}).get("collision_free") is not True
+                            or termination.get("confirmed") is not True):
+                        raise RuntimeError(f"seed {seed} {scenario}/{strategy}: collision or independent termination failed")
+                    if (scenario == "normal" or strategy == "recovery") and row.get("status") != "PASS":
+                        raise RuntimeError(f"seed {seed} {scenario}/{strategy}: task truth must pass")
+                records[strategy] = (path, row)
+            baseline_path, baseline = records["baseline"]
+            recovery_path, recovery = records["recovery"]
+            if (not all(recovery.get(key) and baseline.get(key) == recovery[key] for key in pair_fields)
+                    or not recovery.get("session_id")
+                    or baseline.get("session_id") == recovery.get("session_id")):
+                raise RuntimeError(f"seed {seed} {scenario}: mismatched pair")
+            pair = dict(scenario=scenario, baseline=str(baseline_path), recovery=str(recovery_path),
+                        baseline_status=baseline["status"], recovery_status=recovery["status"],
+                        world_sha256=recovery["world_sha256"])
+            if scenario == "recoverable":
+                events = [json.loads(line) for line in (recovery_path / "events.jsonl").read_text().splitlines() if line.strip()]
+                telemetry = [json.loads(line) for line in (recovery_path / "telemetry.jsonl").read_text().splitlines() if line.strip()]
+                audit = analyze_recovery_causality(events, telemetry, reserve_m=0.1,
+                    estimator_memory_horizon_s=recovery["configuration"]["integrity_information_memory_horizon_s"])
+                write_json(recovery_path / "recovery-causal-audit.json", audit)
+                if audit.get("mechanism_status") != "PASS":
+                    raise RuntimeError(f"seed {seed} recoverable: information-confirmed recovery missing")
+                pair["recovery_audit"] = str(recovery_path / "recovery-causal-audit.json")
+            pairs.append(pair)
+        groups.append(dict(seed=seed, scenarios=pairs))
+    return dict(root=str(dev_root), paired_groups=groups, independent_seeds=[1000, 1001, 1002],
+                completed_tasks=18, acceptance="normal truth success; recoverable recovery and truth; unrecoverable safe refusal")
 
 
 def validate_server(args):

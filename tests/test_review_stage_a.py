@@ -237,6 +237,16 @@ def test_stage_a_publishes_registered_cloud_for_information_map():
     assert 'remappings=[("/xq/p5/cloud_map", "/impact/information_cloud")]' in information_map
 
 
+def test_recoverable_localization_deadline_allows_a_second_observation_cycle():
+    launch = (impact.ROOT / "src/xq_sim_bringup/launch/impact_sitl.launch.py").read_text()
+    supervisor = launch.split('autonomy("impact_supervisor"', 1)[1].split(
+        'autonomy("impact_arbiter"', 1
+    )[0]
+    assert 'localization_recovery_timeout_s=(12.0 if scenario.get("scenario") == "recoverable" else 8.0)' in supervisor
+    assert 'recovery_release_waypoint=(' in supervisor
+    assert 'recovery_release_speed_scale=mission_speed_scale' in supervisor
+
+
 def test_stage_a_freezes_p15_validated_information_memory_contract():
     configuration = impact.config()
     assert configuration["integrity_information_memory_horizon_s"] == 3.0
@@ -295,6 +305,29 @@ def test_unconfirmed_termination_cannot_be_completed_outcome():
         dict(status="PASS", samples=100, collision_events=0,
              checks={"actual_goal_reached": True}))
     assert result == dict(status="FAIL", completed_record=False)
+
+
+@pytest.mark.parametrize("fault", [None, "missing_independent_evidence", "stale_state",
+                                   "armed", "no_reason", "launcher_failure"])
+def test_preflight_refusal_is_completed_failure_only_with_termination_evidence(fault):
+    mission = dict(status="FAIL", task_success=False, termination_confirmed=True,
+        preflight_refusal=dict(confirmed=True, reasons=["geometry_translation_unobservable"]),
+        termination=dict(armed_seen=False, state_fresh=True, disarmed=True,
+                         evidence="fresh_fcu_remained_disarmed"))
+    dataflash = dict(never_armed_confirmed=True)
+    exit_code = 0
+    if fault == "missing_independent_evidence":
+        dataflash = None
+    elif fault == "stale_state":
+        mission["termination"]["state_fresh"] = False
+    elif fault == "armed":
+        mission["termination"]["armed_seen"] = True
+    elif fault == "no_reason":
+        mission["preflight_refusal"]["reasons"] = []
+    elif fault == "launcher_failure":
+        exit_code = 1
+    assert impact.classify_outcome(exit_code, mission, dict(samples=0), dataflash) == dict(
+        status="FAIL", completed_record=fault is None)
 
 
 @pytest.mark.parametrize("audit_status,expected", [("PASS", "REVIEW_REQUIRED"),

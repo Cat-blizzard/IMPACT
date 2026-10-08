@@ -11,8 +11,9 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import PointCloud2, PointField
-from xq_sim_interfaces.msg import InformationMap
+from xq_sim_interfaces.msg import InformationMap, LocalizationGeometry
 
+from .localization_health import geometry_observation_current
 from .p10_active_perception_node import _cloud_xyz
 from .surfel_map import TemporalVoxelSurfelMap
 
@@ -50,6 +51,8 @@ class P10InformationMapNode(Node):
             "maximum_input_points": 30000,
             "publish_period_s": 0.50,
             "minimum_valid_surfels": 12,
+            "minimum_weak_fraction": 0.0,
+            "maximum_geometry_stamp_gap_s": 0.25,
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
@@ -62,6 +65,7 @@ class P10InformationMapNode(Node):
             maximum_voxels=int(self.get_parameter("maximum_voxels").value),
         )
         self._last_header = None
+        self._geometry = None
         self._received_scans = 0
         qos = QoSProfile(depth=20, reliability=ReliabilityPolicy.RELIABLE)
         self.map_publisher = self.create_publisher(InformationMap, "/integrity/information_map", qos)
@@ -69,18 +73,33 @@ class P10InformationMapNode(Node):
         self.create_subscription(
             PointCloud2, str(self.get_parameter("input_topic").value), self._cloud_cb, qos
         )
+        self.create_subscription(
+            LocalizationGeometry, "/localization/geometry", self._geometry_cb, qos
+        )
         self.create_timer(float(self.get_parameter("publish_period_s").value), self._publish)
         self.get_logger().info(
             "P10 temporal surfel map ready: FAST-LIO registered cloud only; no Ground Truth"
         )
 
     def _cloud_cb(self, message: PointCloud2) -> None:
+        stamp_s = float(message.header.stamp.sec) + 1.0e-9 * float(message.header.stamp.nanosec)
+        minimum_fraction = float(self.get_parameter("minimum_weak_fraction").value)
+        if minimum_fraction > 0.0:
+            if self._geometry is None:
+                return
+            geometry_stamp = (float(self._geometry.header.stamp.sec)
+                              + 1.0e-9 * float(self._geometry.header.stamp.nanosec))
+            if not geometry_observation_current(
+                self._geometry.information_matrix, self._geometry.effective_points,
+                geometry_stamp, stamp_s, minimum_weak_fraction=minimum_fraction,
+                maximum_stamp_gap_s=float(self.get_parameter("maximum_geometry_stamp_gap_s").value),
+            ):
+                return
         points = _cloud_xyz(message)
         maximum = int(self.get_parameter("maximum_input_points").value)
         if len(points) > maximum:
             stride = int(math.ceil(len(points) / maximum))
             points = points[::stride]
-        stamp_s = float(message.header.stamp.sec) + 1.0e-9 * float(message.header.stamp.nanosec)
         try:
             self._map.update(points, stamp_s)
         except ValueError as error:
@@ -88,6 +107,9 @@ class P10InformationMapNode(Node):
             return
         self._last_header = message.header
         self._received_scans += 1
+
+    def _geometry_cb(self, message: LocalizationGeometry) -> None:
+        self._geometry = message
 
     def _publish(self) -> None:
         if self._last_header is None:

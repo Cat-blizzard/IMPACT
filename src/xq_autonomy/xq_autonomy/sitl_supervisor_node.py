@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -17,13 +18,14 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import String
 from traj_utils.msg import Bspline
-from xq_sim_interfaces.msg import (DirectionalIntegrity, InformationMap, PlannerGoal,
+from xq_sim_interfaces.msg import (DirectionalIntegrity, InformationMap, LocalizationGeometry, PlannerGoal,
                                   PlannerCandidate, TrajectoryAuthorization)
 from .alert_limit import sample_bspline, compute_alert_limit
 from .minimum_excitation import (generate_discrete_candidates, build_information_profile,
                                  CandidateForecast, evaluate_candidate)
 from .p10_active_perception_node import _cloud_xyz
 from .sitl_integrity import certify_final, RecoveryCycle
+from .localization_health import geometry_health
 
 # GPU SITL can take several seconds to brake to the low-speed arrival gate
 # after an accepted lateral/vertical recovery spline.  Keep the request alive
@@ -40,6 +42,9 @@ RECOVERY_MARGIN_RESERVE_M = 0.10
 # Require a measurable covariance reduction and independent geometric
 # information gain on the same pre-recovery direction.
 RECOVERY_MIN_INFORMATION_GAIN_M2 = 1.0e-6
+RECOVERY_TOTAL_BUDGET_S = 45.0
+LOCALIZATION_RESTORATION_DWELL_S = 1.0
+LOCALIZATION_ANCHOR_WEAK_FRACTION = 0.05
 # An accepted spline is still an execution failure when the estimator has not
 # made measurable progress toward the requested mission goal for a sustained
 # interval.  This is deliberately longer than one planner cycle and is only
@@ -56,6 +61,10 @@ EXECUTION_WEAK_AXIS_ALIGNMENT = 0.75
 # goal gate and braking. Waiting for near-zero speed lets the vehicle coast
 # past the gate because the FCU position controller has non-zero stopping lag.
 EXECUTION_GOAL_SPEED_MPS = 0.35
+# The mission-stage topic is a liveness heartbeat.  A half-second watchdog
+# races normal GPU SITL scheduling during a replan and can revoke a valid
+# trajectory before the recovery state machine observes its new data.
+STAGE_HEARTBEAT_TIMEOUT_S = 2.0
 
 
 def minimum_recovery_information_radius_m() -> float:
@@ -107,11 +116,17 @@ class SITLSupervisor(Node):
                            "goal": [12., 0., 2.], "speed_limit": 0.65,
                            "goal_tolerance_m": 0.45,
                            "mission_speed_scale": 1.0,
+                           "recovery_release_speed_scale": 0.5,
                            "execution_progress_timeout_s": EXECUTION_PROGRESS_TIMEOUT_S,
+                           "minimum_translation_weak_fraction": 0.02,
+                           "localization_recovery_timeout_s": 8.0,
+                           "localization_sensor_range_m": 40.0,
+                           "recovery_observation_window_s": 3.0,
                            "event_file": "", "margin_reserve": 0.10,
                            "recovery_information_visibility_radius_m":
                                RECOVERY_INFORMATION_VISIBILITY_RADIUS_M}.items():
             self.declare_parameter(key, value)
+        self.declare_parameter("recovery_release_waypoint", [math.nan] * 3)
         self.session = self.get_parameter("session_id").value
         if not self.session:
             raise ValueError("session_id is required")
@@ -132,11 +147,24 @@ class SITLSupervisor(Node):
         self.mission_speed_scale = float(self.get_parameter("mission_speed_scale").value)
         if not 0.1 <= self.mission_speed_scale <= 1.0:
             raise ValueError("mission_speed_scale must be between 0.1 and 1.0")
+        self.recovery_release_speed_scale = float(
+            self.get_parameter("recovery_release_speed_scale").value
+        )
+        if not 0.1 <= self.recovery_release_speed_scale <= 1.0:
+            raise ValueError("recovery_release_speed_scale must be between 0.1 and 1.0")
         self.execution_progress_timeout = float(
             self.get_parameter("execution_progress_timeout_s").value
         )
         if not math.isfinite(self.execution_progress_timeout) or self.execution_progress_timeout <= 0.:
             raise ValueError("execution_progress_timeout_s must be finite and positive")
+        self.minimum_translation_weak_fraction = float(
+            self.get_parameter("minimum_translation_weak_fraction").value)
+        self.localization_recovery_timeout = float(
+            self.get_parameter("localization_recovery_timeout_s").value)
+        if not math.isfinite(self.localization_recovery_timeout) or self.localization_recovery_timeout <= 0:
+            raise ValueError("localization recovery timeout must be finite and positive")
+        geometry_health(np.eye(3), 30,
+                        minimum_weak_fraction=self.minimum_translation_weak_fraction)
         self.recovery_information_visibility_radius = float(
             self.get_parameter("recovery_information_visibility_radius_m").value
         )
@@ -150,7 +178,29 @@ class SITLSupervisor(Node):
                 "outside the fixed safety and margin reserves"
             )
         self.cycle = RecoveryCycle()
-        self.odom = self.cloud = self.integrity = self.information = None
+        self.odom = self.cloud = self.integrity = self.information = self.geometry = None
+        self.localization_loss_since = None
+        self.localization_restored_since = None
+        self.last_healthy_position = None
+        self.localization_sensor_range = float(self.get_parameter("localization_sensor_range_m").value)
+        release_waypoint = np.asarray(
+            self.get_parameter("recovery_release_waypoint").value, dtype=float
+        )
+        unset_release_waypoint = (
+            release_waypoint.size == 3 and np.isnan(release_waypoint).all()
+        )
+        if (release_waypoint.size not in (3,) or
+                not (unset_release_waypoint or np.isfinite(release_waypoint).all())):
+            raise ValueError("recovery release waypoint must be empty or a finite 3-vector")
+        self.recovery_release_waypoint = None if unset_release_waypoint else release_waypoint
+        self.recovery_release_active = False
+        self.recovery_release_complete = False
+        self.recovery_observation_window = float(self.get_parameter("recovery_observation_window_s").value)
+        if not math.isfinite(self.recovery_observation_window) or self.recovery_observation_window < 0.5:
+            raise ValueError("recovery observation window must be at least 0.5 s")
+        if not math.isfinite(self.localization_sensor_range) or self.localization_sensor_range <= 0.5:
+            raise ValueError("localization sensor range must exceed 0.5 m")
+        self.localization_health = {}
         self.received = {}
         self.active = self.pending = None
         self.enabled = False
@@ -164,11 +214,14 @@ class SITLSupervisor(Node):
         self.recovery_origin = None
         self.recovery_before = None
         self.recovery_before_information = None
+        self.recovery_step_before_information = None
         self.recovery_after_information = None
         self.recovery_observation_request_id = None
         self.recovery_step_request_id = None
         self.recovery_observed = False
         self.recovery_required = False
+        self.recovery_started_sim = None
+        self.recovery_spent_sim = 0.0
         self.recovery_information_improved = None
         self.observing_until = None
         self.ready_wall = 0.
@@ -188,6 +241,7 @@ class SITLSupervisor(Node):
             (Odometry, "/localization/odom", lambda m: self.input("odom", m)),
             (PointCloud2, "/cloud_registered", lambda m: self.input("cloud", m)),
             (DirectionalIntegrity, "/integrity/directional", lambda m: self.input("integrity", m)),
+            (LocalizationGeometry, "/localization/geometry", lambda m: self.input("geometry", m)),
             (InformationMap, "/integrity/information_map", lambda m: self.input("information", m))]:
             self.create_subscription(kind, topic, callback, qos_profile_sensor_data)
         self.create_subscription(PlannerCandidate, "/impact/planner_candidate", self.candidate, 20)
@@ -228,7 +282,7 @@ class SITLSupervisor(Node):
 
     def fresh(self):
         now = self.now_s()
-        for name in ("odom", "cloud", "integrity"):
+        for name in ("odom", "cloud", "integrity", "geometry"):
             value = getattr(self, name)
             if value is None or value.header.frame_id != "xq_lio_map":
                 return False
@@ -241,6 +295,8 @@ class SITLSupervisor(Node):
     def request(self, target, intent="mission", scale=1.0):
         if self.execution_fault:
             return
+        if intent != "mission" and self.recovery_required:
+            self._capture_recovery_step_baseline()
         self.target = np.asarray(target, float)
         req = PlannerGoal()
         req.header.stamp = self.get_clock().now().to_msg()
@@ -254,6 +310,12 @@ class SITLSupervisor(Node):
         self.last_request_wall = time.monotonic()
         self.last_plan_sim = self.now_s()
         self.event("PLAN_REQUEST", intent=intent, goal=self.target.tolist(), speed_scale=scale)
+
+    def _capture_recovery_step_baseline(self):
+        """Capture a fresh fixed-direction baseline immediately before an action."""
+        direction = (self.recovery_before_information.get("direction")
+                     if self.recovery_before_information else None)
+        self.recovery_step_before_information = self._fixed_information_snapshot(direction)
 
     def authorization(self, candidate, accepted, reason):
         msg = TrajectoryAuthorization()
@@ -294,6 +356,9 @@ class SITLSupervisor(Node):
         elapsed = self.now_s() - stamp_s(b.start_time)
         if elapsed < 0:
             raise ValueError("future trajectory")
+        duration = b.knots[len(points)] - b.knots[b.order]
+        terminal_hold = (self.cycle.intent != "mission" and self.cycle.phase == "EXECUTING"
+                         and duration <= elapsed <= duration + RECOVERY_SETTLE_TIMEOUT_S)
         obstacles = _cloud_xyz(self.cloud)
         # Conservative voxel representatives: reserve an extra voxel diagonal below.
         if len(obstacles):
@@ -301,19 +366,30 @@ class SITLSupervisor(Node):
             obstacles = obstacles[indices]
         error = 0.
         if tracking:
-            first = sample_bspline(points, np.array(b.knots), b.order, 0.05,
-                                    b.knots[b.order] + elapsed)[0]
+            parameter = b.knots[b.order] + elapsed
+            if terminal_hold:
+                first = sample_bspline(points, np.array(b.knots), b.order, 0.05,
+                                       b.knots[len(points)] - 1e-6)[-1]
+            else:
+                first = sample_bspline(points, np.array(b.knots), b.order, 0.05, parameter)[0]
             error = float(np.linalg.norm(first - xyz(self.odom.pose.pose.position)))
         age = max(self.now_s() - stamp_s(m.header.stamp) for m in (self.odom, self.cloud, self.integrity))
         result = certify_final(points, np.array(b.knots), b.order, obstacles,
             np.array(self.integrity.integrity_covariance).reshape(3, 3), strategy=self.strategy,
             k_alpha=self.k, elapsed=elapsed, input_age=age, tracking_error=error,
             speed_limit=self.limit, reserve=float(self.get_parameter("margin_reserve").value),
-            body_radius=0.35 + math.sqrt(3) * 0.1)
+            body_radius=0.35 + math.sqrt(3) * 0.1, terminal_hold=terminal_hold)
+        health = self._measured_geometry_health()
+        if not health["healthy"] and self.cycle.intent == "mission":
+            result = replace(result, accepted=False, reason="LOCALIZATION_UNOBSERVABLE")
+        elif self.localization_loss_since is not None and self.cycle.intent == "mission":
+            result = replace(result, accepted=False, reason="LOCALIZATION_RESTORATION_PENDING")
         self.last_metrics = dict(AL=result.alert, PL=result.protection, margin=result.margin,
                                  speed_bound=result.speed, tracking_error=error,
                                  critical_direction=list(result.direction),
                                  source_stamp=stamp_s(self.integrity.header.stamp))
+        self.last_metrics["localization_geometry"] = health
+        self.last_metrics["terminal_hold"] = terminal_hold
         self.event("CERTIFICATION_TIMING", elapsed_wall_s=time.perf_counter()-started,
                    input_age_sim_s=age, remaining_recheck=tracking,
                    trajectory_id=b.traj_id)
@@ -341,15 +417,32 @@ class SITLSupervisor(Node):
         norm = np.linalg.norm(direction)
         if norm < 0.1:
             return []
-        baseline = position + np.linspace(0, min(norm, 1.), 9)[:, None] * direction / norm
-        candidates = generate_discrete_candidates(baseline, baseline_duration=3.)
+        # A one metre probe can stop inside the same longitudinally weak
+        # interval. The bounded 2.5 m probe reaches the first forward support
+        # while remaining a finite, certification-checked recovery action.
+        baseline = position + np.linspace(0, min(norm, 2.5), 9)[:, None] * direction / norm
+        candidates = generate_discrete_candidates(baseline, baseline_duration=3., vertical_offset=0.50,
+            previous_high_quality_pose=self.last_healthy_position)
         info = self.information
         output = []
         for candidate in candidates:
             if candidate.name == "baseline":
                 continue
             try:
-                alert = compute_alert_limit(candidate.positions, _cloud_xyz(self.cloud),
+                # Execute the informative portion of the bounded candidate,
+                # rather than stopping at its midpoint. The midpoint removes
+                # most of the forward probe and can leave the vehicle inside
+                # the same weak interval across recovery retries.
+                middle = candidate.positions[max(1, int(round(0.75 * (len(candidate.positions) - 1))))]
+                if candidate.name == "backtrack": middle = candidate.positions[1]
+                if candidate.name == "short_hover": middle = position
+                if candidate.name in ("up_offset", "down_offset", "left_lateral", "right_lateral"):
+                    middle = np.asarray(middle, dtype=float)
+                if not 0.65 <= middle[2] <= 2.9:
+                    continue
+                step_positions = position + np.linspace(0., 1., 9)[:, None] * (middle - position)
+                candidate = replace(candidate, positions=step_positions)
+                alert = compute_alert_limit(step_positions, _cloud_xyz(self.cloud),
                     speed_mps=RECOVERY_SPEED_MPS,
                     latency_p99_s=RECOVERY_LATENCY_P99_S,
                     maximum_acceleration_mps2=1., body_radius_m=RECOVERY_BODY_RADIUS_M,
@@ -369,20 +462,56 @@ class SITLSupervisor(Node):
                 # Future improvement only ranks actions whose rough geometry is feasible.
                 if not forecast.feasible:
                     continue
-                middle = candidate.positions[len(candidate.positions)//2]
-                if candidate.name == "backtrack": middle = candidate.positions[1]
-                if candidate.name == "short_hover": middle = position
-                if not 0.65 <= middle[2] <= 2.9:
-                    continue
-                scale = 0.5 if candidate.name == "slow_trajectory" else 1.0
-                output.append((forecast.cost, candidate.name, middle, scale, forecast.minimum_margin))
+                weak_prediction = None
+                if self.recovery_before_information:
+                    weak = np.array(self.recovery_before_information["direction"])
+                    # Forecast the executed short step, including known distant
+                    # anchors at the real sensor range. Prediction never authorizes.
+                    continuation = middle + direction / norm * min(norm, 0.5)
+                    step_profile = build_information_profile(np.array([position, middle, continuation]),
+                        np.array([xyz(p) for p in info.positions]),
+                        np.array([xyz(p) for p in info.normals]),
+                        np.array(info.static_confidence), np.array(info.geometry_quality),
+                        np.array(info.last_seen_s), now=self.now_s(),
+                        visibility_radius=self.localization_sensor_range,
+                        age_time_constant=10., information_scale=2500., range_edge_taper_m=0.5,
+                        sensor_vertical_fov_rad=(-0.12217304764, 0.90757121104),
+                        sensor_height_offset_m=0.12)
+                    observed = np.einsum("i,nij,j->n", weak, step_profile, weak)
+                    weak_prediction = dict(direction=weak.tolist(), before=float(observed[0]),
+                                           after=float(observed[1]),
+                                           continuation=float(observed[2]))
+                    variance_before = float(weak @ np.asarray(
+                        self.integrity.integrity_covariance, dtype=float).reshape(3, 3) @ weak)
+                    variance_after = 1.0 / (1.0 / max(variance_before, 1.0e-12) + float(observed[1]))
+                    weak_prediction["variance_before_m2"] = variance_before
+                    weak_prediction["variance_after_m2"] = variance_after
+                    if variance_before - variance_after < RECOVERY_MIN_INFORMATION_GAIN_M2:
+                        continue
+                # Recovery splines use the same physical speed envelope as the
+                # mission arm. A raw scale of 1.0 would restore the nominal
+                # 0.65 m/s planner speed and be rejected by the 0.30 m/s
+                # recoverable certification limit before any observation.
+                scale = self.mission_speed_scale
+                if candidate.name == "slow_trajectory":
+                    scale *= 0.5
+                output.append((forecast.cost, candidate.name, middle, scale, forecast.minimum_margin,
+                               weak_prediction))
             except (ValueError, np.linalg.LinAlgError):
                 continue
-        output.sort(key=lambda item: (item[0], item[1]))
+        # Prefer support that survives a short forward continuation. Recovering
+        # at an entry anchor alone can otherwise create a backtrack/retry loop.
+        # These forecasts rank candidates; they never replace live certification.
+        output.sort(key=lambda item: (
+            0 if item[1] == "up_offset" else 1,
+            -min(item[5]["after"], item[5]["continuation"])
+            if item[5] else 0.0,
+            item[0], item[1]))
         self.event(
             "RECOVERY_FORECAST",
             information_visibility_radius_m=self.recovery_information_visibility_radius,
-            candidates=[dict(name=x[1], cost=x[0], predicted_margin=x[4]) for x in output],
+            candidates=[dict(name=x[1], cost=x[0], predicted_margin=x[4],
+                             fixed_direction_information=x[5], target=x[2].tolist()) for x in output],
         )
         return [(x[1], x[2], x[3]) for x in output]
 
@@ -408,29 +537,50 @@ class SITLSupervisor(Node):
 
     def _fixed_information_snapshot(self, direction=None):
         """Return covariance information on one fixed direction across recovery."""
-        if self.integrity is None:
+        if self.integrity is None or self.geometry is None:
             return None
         try:
             covariance = np.asarray(self.integrity.integrity_covariance, dtype=float).reshape(3, 3)
             information = np.asarray(self.integrity.information_matrix, dtype=float).reshape(3, 3)
+            raw_information = np.asarray(self.geometry.information_matrix, dtype=float).reshape(3, 3)
             if direction is None:
                 direction = np.asarray(self.integrity.weak_direction_map, dtype=float).reshape(3)
             direction = np.asarray(direction, dtype=float).reshape(3)
             norm = float(np.linalg.norm(direction))
-            if norm <= 0.0 or not np.isfinite(np.r_[covariance.ravel(), information.ravel(), direction]).all():
+            if norm <= 0.0 or not np.isfinite(np.r_[covariance.ravel(), information.ravel(),
+                                                  raw_information.ravel(), direction]).all():
                 return None
             direction = direction / norm
             variance = float(direction @ covariance @ direction)
             observed_information = float(direction @ information @ direction)
-            if (variance < 0.0 or observed_information < 0.0
+            observed_raw_information = float(direction @ raw_information @ direction)
+            if (variance < 0.0 or observed_information < 0.0 or observed_raw_information < 0.0
                     or not math.isfinite(variance) or not math.isfinite(observed_information)):
                 return None
             return dict(direction=direction.tolist(), variance_m2=variance,
                         geometric_information=observed_information,
+                        raw_geometric_information=observed_raw_information,
+                        raw_stamp_s=stamp_s(self.geometry.header.stamp),
                         protection_m=self.k * math.sqrt(variance),
                         stamp_s=stamp_s(self.integrity.header.stamp))
         except (TypeError, ValueError, np.linalg.LinAlgError):
             return None
+
+    def _retain_recovered_height(self, position):
+        if self.recovery_release_waypoint is not None or position[2] < self.goal[2] + 0.2:
+            return
+        direction = self.goal - position
+        direction[2] = 0.0
+        distance = float(np.linalg.norm(direction))
+        if distance <= self.goal_tolerance:
+            return
+        # A successful elevated observation must not immediately be undone by
+        # descending to the nominal goal. This target is only a plan request;
+        # the full optimized spline still needs the same live certification.
+        self.recovery_release_waypoint = position + direction / distance * min(distance, 2.0)
+        self.recovery_release_complete = False
+        self.event("RECOVERY_HEIGHT_CONTINUATION_REQUESTED",
+                   goal=self.recovery_release_waypoint.tolist())
 
     def _check_execution_progress(self, now, position):
         """Fail closed when an authorized mission execution stops advancing."""
@@ -482,13 +632,66 @@ class SITLSupervisor(Node):
         if self.strategy != "recovery" or self.recovery_required:
             return
         self.recovery_required = True
+        if self.recovery_started_sim is None:
+            self.recovery_started_sim = self.now_s()
         self.recovery_before = dict(self.last_metrics)
-        self.recovery_before_information = self._fixed_information_snapshot()
+        self.recovery_before_information = self._fixed_information_snapshot(
+            self.localization_health.get("weak_direction")
+            if self.localization_health.get("healthy") is False else None)
+        self.recovery_step_before_information = None
         self.recovery_after_information = None
         self.recovery_observation_request_id = None
         self.recovery_step_request_id = None
         self.recovery_information_improved = None
         self.recovery_observed = False
+
+    def _measured_geometry_health(self):
+        if self.geometry is None:
+            return dict(healthy=False, reasons=["geometry_missing"])
+        return geometry_health(self.geometry.information_matrix, self.geometry.effective_points,
+                               minimum_weak_fraction=self.minimum_translation_weak_fraction)
+
+    def _check_localization_health(self, now):
+        recovery_elapsed = self.recovery_spent_sim + (
+            now - self.recovery_started_sim if self.recovery_started_sim is not None else 0.0)
+        if self.recovery_required and recovery_elapsed >= RECOVERY_TOTAL_BUDGET_S:
+            self.execution_fault = dict(reason="RECOVERY_BUDGET_EXCEEDED",
+                                        elapsed_s=float(recovery_elapsed))
+            self.pending = None
+            self.cycle.phase = "FAIL_CLOSED"
+            self.revoke("RECOVERY_BUDGET_EXCEEDED")
+            self.event("EXECUTION_FAIL_CLOSED", **self.execution_fault)
+            return
+        self.localization_health = self._measured_geometry_health()
+        if self.localization_health["healthy"]:
+            if self.localization_loss_since is None:
+                if self.localization_health["weak_fraction"] >= LOCALIZATION_ANCHOR_WEAK_FRACTION:
+                    self.last_healthy_position = xyz(self.odom.pose.pose.position).copy()
+                return
+            if self.localization_restored_since is None:
+                self.localization_restored_since = stamp_s(self.geometry.header.stamp)
+            if stamp_s(self.geometry.header.stamp) - self.localization_restored_since >= LOCALIZATION_RESTORATION_DWELL_S:
+                self.event("LOCALIZATION_GEOMETRY_RESTORED", geometry=self.localization_health,
+                           sustained_observation_s=LOCALIZATION_RESTORATION_DWELL_S)
+                self.localization_loss_since = None
+                self.localization_restored_since = None
+                return
+        else:
+            self.localization_restored_since = None
+            if self.localization_loss_since is None:
+                self.localization_loss_since = now
+                self.event("LOCALIZATION_GEOMETRY_DEGRADED", geometry=self.localization_health)
+            if self.active and self.cycle.intent == "mission":
+                self._require_information_recovery()
+                self.revoke("LOCALIZATION_UNOBSERVABLE")
+        elapsed = now - self.localization_loss_since
+        if self.strategy != "recovery" or elapsed >= self.localization_recovery_timeout:
+            self.execution_fault = dict(reason="LOCALIZATION_UNOBSERVABLE", elapsed_s=elapsed,
+                                        geometry=self.localization_health)
+            self.pending = None
+            self.revoke("LOCALIZATION_UNOBSERVABLE")
+            self.cycle.phase = "FAIL_CLOSED"
+            self.event("EXECUTION_FAIL_CLOSED", **self.execution_fault)
 
     def tick(self):
         now = self.now_s()
@@ -496,10 +699,13 @@ class SITLSupervisor(Node):
             self.revoke("CLOCK_RESET")
             self.reset, self.enabled = True, False
             self.pending = None
-            self.odom = self.cloud = self.integrity = self.information = None
+            self.odom = self.cloud = self.integrity = self.information = self.geometry = None
+            self.localization_loss_since = None
+            self.localization_restored_since = None
+            self.last_healthy_position = None
             self.event("CLOCK_RESET_RESTART_REQUIRED")
         self.last_sim = now
-        if time.monotonic() - self.stage_wall > 0.5:
+        if time.monotonic() - self.stage_wall > STAGE_HEARTBEAT_TIMEOUT_S:
             self.enabled = False
         if not self.enabled or not self.fresh():
             self.revoke("DISABLED_OR_STALE")
@@ -507,6 +713,10 @@ class SITLSupervisor(Node):
             return
         if self.execution_fault:
             self.revoke(self.execution_fault["reason"])
+            self.status()
+            return
+        self._check_localization_health(now)
+        if self.execution_fault:
             self.status()
             return
         if self.active:
@@ -519,6 +729,13 @@ class SITLSupervisor(Node):
                 else:
                     self.authorization(self.active, True, "REVALIDATED")
             except (ValueError, np.linalg.LinAlgError):
+                if self.cycle.intent == "mission":
+                    # A numerically invalid recheck is still a loss of
+                    # certification.  Route it through the same information
+                    # recovery state machine as an explicit margin rejection;
+                    # otherwise the next mission request can be re-authorized
+                    # without a recovery step or new observation.
+                    self._require_information_recovery()
                 self.revoke("EXPIRED_OR_INVALID")
         if self.pending:
             candidate, self.pending = self.pending, None
@@ -530,12 +747,15 @@ class SITLSupervisor(Node):
             recovery_comparison = None
             if accepted and self.cycle.intent == "mission" and self.recovery_required:
                 before, after = self.recovery_before, self.last_metrics
+                information_before = (self.recovery_step_before_information
+                                      or self.recovery_before_information)
                 if before:
                     da, dp = after["AL"]-before["AL"], after["PL"]-before["PL"]
                     recovery_comparison = dict(
                         before=before, after=dict(after), delta_AL=da, delta_PL=dp,
                         delta_margin=da-dp,
-                        information_before=self.recovery_before_information,
+                        information_before=information_before,
+                        information_initial=self.recovery_before_information,
                         information_after=self.recovery_after_information,
                         observation_request_id=self.recovery_observation_request_id,
                         information_improved=self.recovery_information_improved is True,
@@ -546,8 +766,8 @@ class SITLSupervisor(Node):
                         or self.recovery_step_request_id is None
                         or self.recovery_step_request_id != self.recovery_observation_request_id):
                     accepted, reason = False, "RECOVERY_INFORMATION_NOT_IMPROVED"
-                elif not recovery_comparison or recovery_comparison["delta_margin"] <= 0.0:
-                    accepted, reason = False, "RECOVERY_MARGIN_NOT_IMPROVED"
+                elif not recovery_comparison:
+                    accepted, reason = False, "RECOVERY_EVIDENCE_MISSING"
             self.event("CERTIFY", accepted=accepted, reason=reason,
                        trajectory_id=candidate.trajectory.traj_id, **self.last_metrics)
             if not accepted and self.cycle.intent == "mission":
@@ -559,8 +779,16 @@ class SITLSupervisor(Node):
                 self.cycle.result(candidate.request_id, True)
                 if recovery_comparison:
                     self.event("RECOVERY_CONFIRMED", **recovery_comparison)
+                    self.recovery_release_active = bool(
+                        self.recovery_release_waypoint is not None
+                        and not self.recovery_release_complete
+                        and np.linalg.norm(self.target - self.recovery_release_waypoint) < 1.0e-6
+                    )
                     self.cycle.remaining.clear()
                     self.recovery_required = False
+                    if self.recovery_started_sim is not None:
+                        self.recovery_spent_sim += max(0.0, now - self.recovery_started_sim)
+                    self.recovery_started_sim = None
                     self.recovery_observed = False
                     self.recovery_information_improved = None
             elif not self.active:
@@ -588,41 +816,70 @@ class SITLSupervisor(Node):
             self.status()
             return
         speed = float(np.linalg.norm(xyz(self.odom.twist.twist.linear)))
-        if (self.cycle.intent == "mission"
+        if (self.active and self.recovery_release_active
+                and self.recovery_release_waypoint is not None
+                and np.linalg.norm(position - self.recovery_release_waypoint) < 0.35
+                and speed < 0.20):
+            self.recovery_release_active = False
+            self.recovery_release_complete = True
+            self.event("RECOVERY_RELEASE_WAYPOINT_REACHED", position=position.tolist())
+            self.revoke("RECOVERY_RELEASE_WAYPOINT_REACHED")
+            self.recovery_release_waypoint = None
+            self.request(self.goal, scale=self.mission_speed_scale)
+        elif (self.active and not self.recovery_required
+                and self.localization_health.get("healthy") is True
+                and self.cycle.intent == "mission"
                 and np.linalg.norm(position - self.goal) < self.goal_tolerance
                 and speed < EXECUTION_GOAL_SPEED_MPS):
             self.completed = True
             self.revoke("GOAL_REACHED")
-        elif self.cycle.intent != "mission" and self.cycle.phase == "EXECUTING" and np.linalg.norm(position-self.target) < 0.2 and speed < 0.15:
+        elif self.cycle.intent != "mission" and self.cycle.phase == "EXECUTING" and np.linalg.norm(position-self.target) < 0.1 and speed < 0.15:
             self.revoke("RECOVERY_STEP_DONE")
             self.cycle.arrived(now)
             self.recovery_step_request_id = self.cycle.request
-            self.observing_until = now + 0.5
+            self.observing_until = now + self.recovery_observation_window
             self.event("RECOVERY_STEP_DONE")
         elif self.cycle.phase == "OBSERVING" and now >= self.observing_until and self.cycle.observed(stamp_s(self.integrity.header.stamp)):
             after_information = self._fixed_information_snapshot(
                 self.recovery_before_information["direction"]
                 if self.recovery_before_information else None
             )
+            information_before = (self.recovery_step_before_information
+                                  or self.recovery_before_information)
             information_improved = bool(
-                self.recovery_before_information and after_information
-                and after_information["stamp_s"] > self.recovery_before_information["stamp_s"]
+                information_before and after_information
+                and after_information["stamp_s"] > information_before["stamp_s"]
+                and after_information["stamp_s"] > self.cycle.observation_after
+                and after_information["raw_stamp_s"] > max(
+                    information_before["raw_stamp_s"], self.cycle.observation_after)
                 and after_information["variance_m2"]
-                <= self.recovery_before_information["variance_m2"] - RECOVERY_MIN_INFORMATION_GAIN_M2
+                <= information_before["variance_m2"] - RECOVERY_MIN_INFORMATION_GAIN_M2
                 and after_information["geometric_information"]
-                > self.recovery_before_information["geometric_information"]
-                + 1.0e-9 * max(1.0, self.recovery_before_information["geometric_information"])
+                > information_before["geometric_information"]
+                + 1.0e-9 * max(1.0, information_before["geometric_information"])
+                and after_information["raw_geometric_information"]
+                > information_before["raw_geometric_information"]
+                + 1.0e-9 * max(1.0, information_before["raw_geometric_information"])
             )
             self.event("NEW_OBSERVATION", before=self.recovery_before,
                        observed_PL=float(self.integrity.weak_direction_protection_level),
                        information_before=self.recovery_before_information,
+                       information_step_before=information_before,
                        information_after=after_information,
                        information_improved=information_improved)
             self.recovery_observed = True
             self.recovery_information_improved = information_improved
             self.recovery_after_information = after_information
             self.recovery_observation_request_id = self.cycle.request
-            self.request(self.goal, scale=self.mission_speed_scale)
+            if information_improved:
+                self._retain_recovered_height(position)
+            target = self.goal
+            scale = self.mission_speed_scale
+            if (self.recovery_release_waypoint is not None
+                    and not self.recovery_release_complete):
+                target = self.recovery_release_waypoint
+                scale = self.recovery_release_speed_scale
+            self.request(target, scale=scale)
         elif not self.completed and not self.active and self.cycle.phase != "OBSERVING" and now-self.last_plan_sim > 1:
             settling_recovery = self.cycle.intent != "mission" and self.cycle.phase == "EXECUTING"
             if settling_recovery and now-self.last_plan_sim <= RECOVERY_SETTLE_TIMEOUT_S:
@@ -640,9 +897,10 @@ class SITLSupervisor(Node):
                 if self.cycle.remaining:
                     name, target, scale = self.cycle.remaining.pop(0)
                     if name == "short_hover":
+                        self._capture_recovery_step_baseline()
                         self.cycle.intent = name
                         self.cycle.arrived(now)
-                        self.observing_until = now + 1.
+                        self.observing_until = now + self.recovery_observation_window
                     else:
                         self.request(target, name, scale)
                 else:
@@ -654,6 +912,7 @@ class SITLSupervisor(Node):
             session_id=self.session, sim_time=self.now_s(), enabled=self.enabled,
             completed=self.completed, reset=self.reset, intent=self.cycle.intent,
             phase=self.cycle.phase, request_id=self.cycle.request,
+            recovery_spent_sim_s=self.recovery_spent_sim,
             authorized=bool(self.active), fail_closed=bool(self.execution_fault),
             execution_fault=self.execution_fault, calibration_sha256=self.calibration_sha,
             ground_truth_subscribed=False, **self.last_metrics), allow_nan=False)))

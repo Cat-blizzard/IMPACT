@@ -68,6 +68,7 @@ namespace ego_planner
     }
 
     bspline_optimizer_->setLocalTargetPt(local_target_pt);
+    bspline_optimizer_->setFixedEndpoint((start_pt - local_target_pt).norm() < 1.0);
 
     rclcpp::Time t_start = node_->get_clock()->now();
     rclcpp::Duration t_init(0, 0), t_opt(0, 0), t_refine(0, 0);
@@ -133,8 +134,13 @@ namespace ego_planner
           point_set.clear();
           flag_too_far = false;
           Eigen::Vector3d last_pt = gl_traj.evaluate(0);
-          for (t = 0; t < time; t += ts)
+          // Include the actual endpoint with a uniform time grid. Omitting it
+          // leaves short recovery splines well short of their requested target.
+          const int intervals = std::max(6, static_cast<int>(std::ceil(time / ts)));
+          ts = time / intervals;
+          for (int sample = 0; sample <= intervals; ++sample)
           {
+            t = sample == intervals ? time : sample * ts;
             Eigen::Vector3d pt = gl_traj.evaluate(t);
             if ((last_pt - pt).norm() > pp_.ctrl_pt_dist * 1.5)
             {
@@ -145,11 +151,10 @@ namespace ego_planner
             point_set.push_back(pt);
           }
         } while (flag_too_far || point_set.size() < 7); // To make sure the initial path has enough points.
-        t -= ts;
         start_end_derivatives.push_back(gl_traj.evaluateVel(0));
         start_end_derivatives.push_back(local_target_vel);
         start_end_derivatives.push_back(gl_traj.evaluateAcc(0));
-        start_end_derivatives.push_back(gl_traj.evaluateAcc(t));
+        start_end_derivatives.push_back(gl_traj.evaluateAcc(time));
       }
       else // Initial path generated from previous trajectory.
       {

@@ -1,0 +1,168 @@
+{
+  "status": "PASS",
+  "source_sha256": "d20e3ad2259442a698432432c69d0f63be711ed819d9df3cc83b981ab7ec782e",
+  "profile": "server_gpu",
+  "external": {
+    "arducopter": "078b215ae78785147cf80fa13e6c4997b61fb7a1d07ef0eb9169f099b4e31a5c",
+    "gazebo_plugin": "1d1dec76ab650437f8e6455e4cf4e8eb29746f8d036ab40d3f00f1feb1cd30b3"
+  },
+  "build_manifest": "/home/ld666/impact-build/build-manifest.json",
+  "evidence": {
+    "legacy_p5": {
+      "status": "FAIL",
+      "run": "/home/ld666/projects/IMPACT/experiments/results/baseline_v1/p5_server_98adf78e",
+      "source_sha256": "d20e3ad2259442a698432432c69d0f63be711ed819d9df3cc83b981ab7ec782e",
+      "external": {
+        "arducopter": "078b215ae78785147cf80fa13e6c4997b61fb7a1d07ef0eb9169f099b4e31a5c",
+        "gazebo_plugin": "1d1dec76ab650437f8e6455e4cf4e8eb29746f8d036ab40d3f00f1feb1cd30b3"
+      },
+      "independent": true,
+      "note": "Historical Frontier/P5 diagnostic; never a current server gate.",
+      "launcher_exit_code": 8
+    },
+    "smoke": {
+      "run": "/home/ld666/projects/IMPACT/experiments/results/pre_matrix_validation_20261008/smoke/normal-baseline-s1000-20261008T233205-50ef4c18",
+      "status": "PASS",
+      "completed_record": true,
+      "source_sha256": "d20e3ad2259442a698432432c69d0f63be711ed819d9df3cc83b981ab7ec782e"
+    },
+    "p4": {
+      "run": "/home/ld666/projects/IMPACT/experiments/results/external_nav/server-validation-pre_matrix_validation_20261008-3a502a7e",
+      "status": "PASS",
+      "launcher_exit_code": 0,
+      "summary": "/home/ld666/projects/IMPACT/experiments/results/external_nav/server-validation-pre_matrix_validation_20261008-3a502a7e/summary.json"
+    },
+    "authorization_contract": {
+      "path": "/home/ld666/projects/IMPACT/experiments/results/pre_matrix_validation_20261008/authorization-runtime-contract.json",
+      "status": "PASS",
+      "source_sha256": "d20e3ad2259442a698432432c69d0f63be711ed819d9df3cc83b981ab7ec782e",
+      "returncode": 0
+    },
+    "stage_a": {
+      "summary": "/home/ld666/projects/IMPACT/experiments/results/pre_matrix_validation_20261008/stage-a/stage-a-summary.json",
+      "run": "/home/ld666/projects/IMPACT/experiments/results/pre_matrix_validation_20261008/stage-a/normal-baseline-s1000-20261008T233544-70157309",
+      "status": "PASS",
+      "checks": {
+        "protocol_is_stage_a": true,
+        "not_legacy_p5_gate": true,
+        "mission_record_present": true,
+        "evaluation_pass": true,
+        "evaluation_actual_goal_reached": true,
+        "evaluation_samples": true,
+        "evaluation_collision_free": true,
+        "termination_record_present": true,
+        "termination_confirmed": true,
+        "rosbag_metadata_present": true,
+        "dataflash_present": true,
+        "dataflash_landing_confirmed": true,
+        "authorized_command_execution_verified": true,
+        "map_content_verified": true,
+        "completed_task": true,
+        "task_success": true
+      }
+    },
+    "stage_b_development": {
+      "root": "experiments/results/final_paired_development_20261008",
+      "paired_groups": [
+        {
+          "seed": 1000,
+          "scenarios": [
+            {
+              "scenario": "normal",
+              "baseline": "experiments/results/final_paired_development_20261008/normal-baseline-s1000-20261008T223854-c2f3b122",
+              "recovery": "experiments/results/final_paired_development_20261008/normal-recovery-s1000-20261008T224536-aa585172",
+              "baseline_status": "PASS",
+              "recovery_status": "PASS",
+              "world_sha256": "5dbf03b8e4fa8b9d70ed63929d91cbbd77cc0c61ac5d1af8cf91552696f0c56d"
+            },
+            {
+              "scenario": "recoverable",
+              "baseline": "experiments/results/final_paired_development_20261008/recoverable-baseline-s1000-20261008T225342-d311beab",
+              "recovery": "experiments/results/final_paired_development_20261008/recoverable-recovery-s1000-final",
+              "baseline_status": "FAIL",
+              "recovery_status": "PASS",
+              "world_sha256": "73beddf3de3c706c78b545e2e8688729600ecc53c81ae9f9d0ecad1b9348eeb8",
+              "recovery_audit": "experiments/results/final_paired_development_20261008/recoverable-recovery-s1000-final/recovery-causal-audit.json"
+            },
+            {
+              "scenario": "unrecoverable",
+              "baseline": "experiments/results/final_paired_development_20261008/unrecoverable-baseline-s1000-20261008T225937-7016976e",
+              "recovery": "experiments/results/final_paired_development_20261008/unrecoverable-recovery-s1000-20261008T230750-8ed014c4",
+              "baseline_status": "FAIL",
+              "recovery_status": "FAIL",
+              "world_sha256": "7e0297a2c8677611bd1107723d58011d85176aa9fe37784e32a67fde2e4e5994"
+            }
+          ]
+        },
+        {
+          "seed": 1001,
+          "scenarios": [
+            {
+              "scenario": "normal",
+              "baseline": "experiments/results/final_paired_development_20261008/normal-baseline-s1001-20261008T224106-ab765e62",
+              "recovery": "experiments/results/final_paired_development_20261008/normal-recovery-s1001-20261008T224817-046621a3",
+              "baseline_status": "PASS",
+              "recovery_status": "PASS",
+              "world_sha256": "8a48b12688b94f362caf77738715524eeb4f3e1029403b78eb4f58409b888d1f"
+            },
+            {
+              "scenario": "recoverable",
+              "baseline": "experiments/results/final_paired_development_20261008/recoverable-baseline-s1001-20261008T225541-e412e8f5",
+              "recovery": "experiments/results/final_paired_development_20261008/recoverable-recovery-s1001-final",
+              "baseline_status": "FAIL",
+              "recovery_status": "PASS",
+              "world_sha256": "73beddf3de3c706c78b545e2e8688729600ecc53c81ae9f9d0ecad1b9348eeb8",
+              "recovery_audit": "experiments/results/final_paired_development_20261008/recoverable-recovery-s1001-final/recovery-causal-audit.json"
+            },
+            {
+              "scenario": "unrecoverable",
+              "baseline": "experiments/results/final_paired_development_20261008/unrecoverable-baseline-s1001-20261008T230222-f33b0b1e",
+              "recovery": "experiments/results/final_paired_development_20261008/unrecoverable-recovery-s1001-20261008T231033-982ff318",
+              "baseline_status": "FAIL",
+              "recovery_status": "FAIL",
+              "world_sha256": "7e0297a2c8677611bd1107723d58011d85176aa9fe37784e32a67fde2e4e5994"
+            }
+          ]
+        },
+        {
+          "seed": 1002,
+          "scenarios": [
+            {
+              "scenario": "normal",
+              "baseline": "experiments/results/final_paired_development_20261008/normal-baseline-s1002-20261008T224323-960126cd",
+              "recovery": "experiments/results/final_paired_development_20261008/normal-recovery-s1002-20261008T225101-1329a48c",
+              "baseline_status": "PASS",
+              "recovery_status": "PASS",
+              "world_sha256": "e772e29fa3cfb7e5ec29ee6be1acc7477150d2f42fd4533ea5e70d08175a74ba"
+            },
+            {
+              "scenario": "recoverable",
+              "baseline": "experiments/results/final_paired_development_20261008/recoverable-baseline-s1002-20261008T225739-819785a4",
+              "recovery": "experiments/results/final_paired_development_20261008/recoverable-recovery-s1002-final",
+              "baseline_status": "FAIL",
+              "recovery_status": "PASS",
+              "world_sha256": "73beddf3de3c706c78b545e2e8688729600ecc53c81ae9f9d0ecad1b9348eeb8",
+              "recovery_audit": "experiments/results/final_paired_development_20261008/recoverable-recovery-s1002-final/recovery-causal-audit.json"
+            },
+            {
+              "scenario": "unrecoverable",
+              "baseline": "experiments/results/final_paired_development_20261008/unrecoverable-baseline-s1002-20261008T230506-3fe7101d",
+              "recovery": "experiments/results/final_paired_development_20261008/unrecoverable-recovery-s1002-20261008T231318-20382b4a",
+              "baseline_status": "FAIL",
+              "recovery_status": "FAIL",
+              "world_sha256": "7e0297a2c8677611bd1107723d58011d85176aa9fe37784e32a67fde2e4e5994"
+            }
+          ]
+        }
+      ],
+      "independent_seeds": [
+        1000,
+        1001,
+        1002
+      ],
+      "completed_tasks": 18,
+      "acceptance": "normal truth success; recoverable recovery and truth; unrecoverable safe refusal"
+    }
+  },
+  "note": "GPU P4-first validation with three same-build, seed-paired baseline/recovery groups and measured information recovery. Development acceptance is not a statistical recovery-benefit claim."
+}

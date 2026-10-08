@@ -109,6 +109,7 @@ namespace ego_planner
     void setWaypoints(const vector<Eigen::Vector3d> &waypts,
                       const vector<int> &waypt_idx); // N-2 constraints at most
     void setLocalTargetPt(const Eigen::Vector3d local_target_pt) { local_target_pt_ = local_target_pt; };
+    void setFixedEndpoint(bool fixed) { fixed_endpoint_ = fixed; }
 
     void optimize();
 
@@ -155,6 +156,7 @@ namespace ego_planner
 
     /* optimization parameters */
     int order_;                    // bspline degree
+    bool fixed_endpoint_{false};
     double lambda1_;               // jerk smoothness weight
     double lambda2_, new_lambda2_; // distance weight
     double lambda3_;               // feasibility weight

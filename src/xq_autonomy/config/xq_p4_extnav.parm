@@ -8,9 +8,19 @@ EK3_SRC1_POSZ 6
 EK3_SRC1_VELZ 6
 EK3_SRC1_YAW 6
 VISO_TYPE 2
-# ArduPilot 4.6+ names the two receiver parameters GPS1_TYPE/GPS2_TYPE.
-# The legacy GPS_TYPE/GPS_TYPE2 names are no longer exposed by current SITL.
+# ArduPilot releases have used both spellings; provide both so the runtime
+# alias check observes whichever names the FCU exposes.
+GPS_TYPE 0
+GPS_TYPE2 0
 GPS1_TYPE 0
 GPS2_TYPE 0
+SIM_GPS_DISABLE 1
+SIM_GPS2_DISABLE 1
+# ArduCopter 4.5 accepts 1=LAND, 2=ALTHOLD, 3=LAND-even-Stabilize here.
+# Keep the FCU's normal LAND protection enabled.  The recoverable development
+# scenario appends a separate, run-local FS_EKF_THRESH 0 override so IMPACT can
+# exercise its measured recovery chain without an FCU mode change; normal and
+# unrecoverable runs retain the FCU protection.
+FS_EKF_ACTION 1
 # Preserve pre-arm IMU and VisualOdom evidence. This changes logging only.
 LOG_DISARMED 1
